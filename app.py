@@ -101,10 +101,41 @@ def extract_technical_metadata(code):
 # 4. CHIAMATA AI SERVIZI LLM (GOOGLE GEMINI)
 # -----------------------------------------------------------------------------
 def analyze_legacy_code(code, metadata, api_key):
-    """Invia il codice e il contesto AST a Gemini per estrarre regole e Mermaid"""
+    """Invia il codice a Gemini con selezione dinamica del modello e gestione errori."""
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-1.5-flash-latest")
     
+    # 1. Trova un modello valido disponibile sul tuo account
+    selected_model_name = None
+    priority_models = ["gemini-2.5-flash", "gemini-1.5-flash-8b", "gemini-1.5-pro"]
+    
+    try:
+        # Recupera la lista reale dei modelli supportati dalla tua API key
+        available_models = [
+            m.name.replace("models/", "") 
+            for m in genai.list_models() 
+            if "generateContent" in m.supported_generation_methods
+        ]
+        
+        # Scegli il primo modello compatibile presente nella priorità
+        for target in priority_models:
+            if target in available_models:
+                selected_model_name = target
+                break
+                
+        # Se nessuno della lista prioritaria è presente, prendi il primo disponibile
+        if not selected_model_name and available_models:
+            selected_model_name = available_models[0]
+            
+    except Exception:
+        # Fallback di sicurezza se la chiamata list_models fallisce
+        selected_model_name = "gemini-2.5-flash"
+
+    if not selected_model_name:
+        raise ValueError("Nessun modello Gemini valido trovato per questa API Key.")
+
+    # 2. Inizializza il modello identificato
+    model = genai.GenerativeModel(selected_model_name)
+
     system_prompt = f"""
     Sei uno specialista in Legacy Code Reverse Engineering e Business Analysis.
     Analizza il seguente codice sorgente e i metadati sintetici estratti dall'AST.
@@ -118,26 +149,34 @@ def analyze_legacy_code(code, metadata, api_key):
     {code}
     ```
 
-    Restituisci ESATTAMENTE un oggetto JSON valido (senza testo prima o dopo) con la seguente struttura:
+    Restituisci ESATTAMENTE un oggetto JSON valido con questa struttura:
     {{
       "summary": "Una o due frasi che descrivono lo scopo business di questo codice.",
       "prerequisites": ["Elenco dei prerequisiti o condizioni necessarie"],
       "business_rules": [
         {{"rule_id": "BR-01", "condition": "Condizione", "action": "Azione di business"}}
       ],
-      "mermaid_code": "graph TD\\n  Node1[Inizio] --> Node2[Azione]\\n  ...",
+      "mermaid_code": "graph TD\\n  Node1[Inizio] --> Node2[Azione]",
       "technical_notes": "Note su debito tecnico o vulnerabilità individuate."
     }}
 
     IMPORTANTE per mermaid_code: Genera un diagramma di flusso pulito 'graph TD', usa etichette semplici nei nodi senza caratteri speciali che rompono la sintassi Mermaid.
     """
 
+    # 3. Chiamata API
     response = model.generate_content(
         system_prompt,
         generation_config={"response_mime_type": "application/json"}
     )
     
-    return json.loads(response.text)
+    # 4. Cleaning della risposta per evitare errori di parsing JSON
+    clean_text = response.text.strip()
+    if clean_text.startswith("```json"):
+        clean_text = clean_text[7:]
+    if clean_text.endswith("```"):
+        clean_text = clean_text[:-3]
+        
+    return json.loads(clean_text.strip())
 
 # -----------------------------------------------------------------------------
 # 5. INTERFACCIA UTENTE (STREAMLIT DUAL-VIEW)

@@ -106,7 +106,7 @@ def analyze_legacy_code(code, metadata, api_key):
     
     # 1. Trova un modello valido disponibile sul tuo account
     selected_model_name = None
-    priority_models = ["gemini-2.5-flash", "gemini-1.5-flash-8b", "gemini-1.5-pro"]
+    priority_models = ["gemini-3.6-flash"]
     
     try:
         # Recupera la lista reale dei modelli supportati dalla tua API key

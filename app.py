@@ -7,7 +7,7 @@ import google.generativeai as genai
 from streamlit_mermaid import st_mermaid
 
 # -----------------------------------------------------------------------------
-# 1. CONFIGURAZIONE PAGINA E API KEY
+# 1. QUESTA DEVE ESSERE IN ASSOLUTO LA PRIMA CHIAMATA STREAMLIT
 # -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="Legacy Code Reverse Engineering",
@@ -15,7 +15,9 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Gestione della chiave API di Gemini (da Sidebar o variabile d'ambiente)
+# -----------------------------------------------------------------------------
+# 2. TUTTO IL RESTO DEL CODICE E DI st.sidebar VIENE DOPO
+# -----------------------------------------------------------------------------
 st.sidebar.title("⚙️ Configurazione")
 api_key = st.sidebar.text_input(
     "Gemini API Key", 

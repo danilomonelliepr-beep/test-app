@@ -103,8 +103,8 @@ def extract_technical_metadata(code):
 def analyze_legacy_code(code, metadata, api_key):
     """Invia il codice e il contesto AST a Gemini per estrarre regole e Mermaid"""
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-2.5-flash")
-
+    model = genai.GenerativeModel("gemini-1.5-flash")
+    
     system_prompt = f"""
     Sei uno specialista in Legacy Code Reverse Engineering e Business Analysis.
     Analizza il seguente codice sorgente e i metadati sintetici estratti dall'AST.

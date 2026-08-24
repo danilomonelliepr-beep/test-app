@@ -2,22 +2,12 @@ import os
 import json
 import streamlit as st
 import sqlglot
-from sqlglot import exp
 import google.generativeai as genai
 from streamlit_mermaid import st_mermaid
 
-# -----------------------------------------------------------------------------
-# 1. QUESTA DEVE ESSERE IN ASSOLUTO LA PRIMA CHIAMATA STREAMLIT
-# -----------------------------------------------------------------------------
-st.set_page_config(
-    page_title="Legacy Code Reverse Engineering",
-    page_layout="wide",
-    initial_sidebar_state="expanded"
-)
+# Configurazione minimale priva di parametri opzionali che causano il TypeError
+st.set_page_config(page_title="Legacy Code Analyzer")
 
-# -----------------------------------------------------------------------------
-# 2. TUTTO IL RESTO DEL CODICE E DI st.sidebar VIENE DOPO
-# -----------------------------------------------------------------------------
 st.sidebar.title("⚙️ Configurazione")
 api_key = st.sidebar.text_input(
     "Gemini API Key", 

@@ -2,22 +2,23 @@ import os
 import json
 import streamlit as st
 import sqlglot
+from sqlglot import exp
 import google.generativeai as genai
 from streamlit_mermaid import st_mermaid
 
-# Configurazione minimale priva di parametri opzionali che causano il TypeError
+# Minimal configuration free of optional parameters causing TypeError
 st.set_page_config(page_title="Legacy Code Analyzer")
 
-st.sidebar.title("⚙️ Configurazione")
+st.sidebar.title("⚙️ Configuration")
 api_key = st.sidebar.text_input(
     "Gemini API Key", 
     type="password", 
     value=os.environ.get("GEMINI_API_KEY", ""),
-    help="Inserisci la tua API Key di Google Gemini"
+    help="Enter your Google Gemini API Key"
 )
 
 # -----------------------------------------------------------------------------
-# 2. FILE DI CODICE LEGACY DI ESEMPIO (DUMMY DATA FOR DEMO)
+# 2. SAMPLE LEGACY CODE FILES (DUMMY DATA FOR DEMO)
 # -----------------------------------------------------------------------------
 SAMPLE_COBOL = """
 000100 IDENTIFICATION DIVISION.
@@ -46,10 +47,10 @@ SAMPLE_COBOL = """
 SAMPLE_JAVA = """
 public class OrderProcessor {
     public void processOrder(String customerId, double orderAmount) {
-        // Query SQL embedded
+        // Embedded SQL Query
         String query = "SELECT status, total_spent FROM users JOIN orders ON users.id = orders.user_id WHERE users.id = '" + customerId + "'";
         
-        boolean isActive = true; // Simulazione stato
+        boolean isActive = true; // State simulation
         if (isActive) {
             if (orderAmount > 1000) {
                 applyDiscount(0.20); // 20% discount for large orders
@@ -68,10 +69,10 @@ public class OrderProcessor {
 """
 
 # -----------------------------------------------------------------------------
-# 3. UTILITY FUNZIONI: AST & PARSING SQL
+# 3. UTILITY FUNCTIONS: AST & SQL PARSING
 # -----------------------------------------------------------------------------
 def parse_sql_tables(sql_text):
-    """Estrae le tabelle lette o scritte usando sqlglot"""
+    """Extracts read or written tables using sqlglot"""
     try:
         expression = sqlglot.parse_one(sql_text)
         tables = [table.name for table in expression.find_all(exp.Table)]
@@ -80,11 +81,11 @@ def parse_sql_tables(sql_text):
         return []
 
 def extract_technical_metadata(code):
-    """Simula l'estrazione AST di costrutti SQL e metriche base"""
+    """Simulates AST extraction of SQL constructs and basic metrics"""
     lines = code.strip().split("\n")
     sql_tables = []
     
-    # Ricerca basilare di stringhe SQL per la demo
+    # Basic SQL string search for demo purposes
     if "SELECT" in code.upper():
         if "CUSTOMER_TABLE" in code.upper():
             sql_tables = parse_sql_tables("SELECT BALANCE, STATUS FROM CUSTOMER_TABLE")
@@ -98,78 +99,78 @@ def extract_technical_metadata(code):
     }
 
 # -----------------------------------------------------------------------------
-# 4. CHIAMATA AI SERVIZI LLM (GOOGLE GEMINI)
+# 4. LLM SERVICE CALLS (GOOGLE GEMINI)
 # -----------------------------------------------------------------------------
 def analyze_legacy_code(code, metadata, api_key):
-    """Invia il codice a Gemini con selezione dinamica del modello e gestione errori."""
+    """Sends code to Gemini with dynamic model selection and error handling."""
     genai.configure(api_key=api_key)
     
-    # 1. Trova un modello valido disponibile sul tuo account
+    # 1. Find a valid available model on your account
     selected_model_name = None
     priority_models = ["gemini-3.6-flash"]
     
     try:
-        # Recupera la lista reale dei modelli supportati dalla tua API key
+        # Retrieve the actual list of models supported by your API key
         available_models = [
             m.name.replace("models/", "") 
             for m in genai.list_models() 
             if "generateContent" in m.supported_generation_methods
         ]
         
-        # Scegli il primo modello compatibile presente nella priorità
+        # Pick the first compatible model present in priority list
         for target in priority_models:
             if target in available_models:
                 selected_model_name = target
                 break
                 
-        # Se nessuno della lista prioritaria è presente, prendi il primo disponibile
+        # If none from priority list is present, pick the first available
         if not selected_model_name and available_models:
             selected_model_name = available_models[0]
             
     except Exception:
-        # Fallback di sicurezza se la chiamata list_models fallisce
-        selected_model_name = "gemini-2.5-flash"
+        # Safety fallback if list_models fails
+        selected_model_name = "gemini-3.6-flash"
 
     if not selected_model_name:
-        raise ValueError("Nessun modello Gemini valido trovato per questa API Key.")
+        raise ValueError("No valid Gemini model found for this API Key.")
 
-    # 2. Inizializza il modello identificato
+    # 2. Initialize the identified model
     model = genai.GenerativeModel(selected_model_name)
 
     system_prompt = f"""
-    Sei uno specialista in Legacy Code Reverse Engineering e Business Analysis.
-    Analizza il seguente codice sorgente e i metadati sintetici estratti dall'AST.
+    You are a specialist in Legacy Code Reverse Engineering and Business Analysis.
+    Analyze the following source code and synthetic metadata extracted from the AST.
 
-    METADATI ESTRATTI:
-    - Tabelle SQL individuate: {metadata['detected_tables']}
-    - Presenza di blocchi condizionali: {metadata['has_conditionals']}
+    EXTRACTED METADATA:
+    - Identified SQL Tables: {metadata['detected_tables']}
+    - Presence of conditional blocks: {metadata['has_conditionals']}
 
-    CODICE LEGACY:
+    LEGACY CODE:
     ```
     {code}
     ```
 
-    Restituisci ESATTAMENTE un oggetto JSON valido con questa struttura:
+    Return EXACTLY a valid JSON object with the following structure:
     {{
-      "summary": "Una o due frasi che descrivono lo scopo business di questo codice.",
-      "prerequisites": ["Elenco dei prerequisiti o condizioni necessarie"],
+      "summary": "One or two sentences describing the business purpose of this code.",
+      "prerequisites": ["List of prerequisites or necessary conditions"],
       "business_rules": [
-        {{"rule_id": "BR-01", "condition": "Condizione", "action": "Azione di business"}}
+        {{"rule_id": "BR-01", "condition": "Condition description", "action": "Business action"}}
       ],
-      "mermaid_code": "graph TD\\n  Node1[Inizio] --> Node2[Azione]",
-      "technical_notes": "Note su debito tecnico o vulnerabilità individuate."
+      "mermaid_code": "graph TD\\n  Node1[Start] --> Node2[Action]",
+      "technical_notes": "Notes on technical debt or identified vulnerabilities."
     }}
 
-    IMPORTANTE per mermaid_code: Genera un diagramma di flusso pulito 'graph TD', usa etichette semplici nei nodi senza caratteri speciali che rompono la sintassi Mermaid.
+    IMPORTANT for mermaid_code: Generate a clean 'graph TD' flowchart, use simple labels inside nodes without special characters that break Mermaid syntax.
     """
 
-    # 3. Chiamata API
+    # 3. API Call
     response = model.generate_content(
         system_prompt,
         generation_config={"response_mime_type": "application/json"}
     )
     
-    # 4. Cleaning della risposta per evitare errori di parsing JSON
+    # 4. Clean response text to prevent JSON parsing errors
     clean_text = response.text.strip()
     if clean_text.startswith("```json"):
         clean_text = clean_text[7:]
@@ -179,16 +180,16 @@ def analyze_legacy_code(code, metadata, api_key):
     return json.loads(clean_text.strip())
 
 # -----------------------------------------------------------------------------
-# 5. INTERFACCIA UTENTE (STREAMLIT DUAL-VIEW)
+# 5. USER INTERFACE (STREAMLIT DUAL-VIEW)
 # -----------------------------------------------------------------------------
 st.title("🔄 Legacy Code to Business Knowledge Platform")
 st.caption("Hackathon Prototype: Transform legacy source code into actionable business logic & diagrams.")
 
-# Selezione File o Custom Input
+# File Selection or Custom Input
 st.sidebar.subheader("📂 Codebase Explorer")
 file_option = st.sidebar.selectbox(
-    "Seleziona un modulo legacy:",
-    ["COBOL: PROCESS-DISCOUNT.cbl", "JAVA: OrderProcessor.java", "Inserisci Codice Personalizzato"]
+    "Select a legacy module:",
+    ["COBOL: PROCESS-DISCOUNT.cbl", "JAVA: OrderProcessor.java", "Enter Custom Code"]
 )
 
 if file_option == "COBOL: PROCESS-DISCOUNT.cbl":
@@ -198,71 +199,71 @@ elif file_option == "JAVA: OrderProcessor.java":
     source_code = SAMPLE_JAVA
     language = "java"
 else:
-    source_code = st.sidebar.text_area("Incolla qui il codice legacy:", height=300)
+    source_code = st.sidebar.text_area("Paste legacy code here:", height=300)
     language = "text"
 
-# Pulsante di Esecuzione Pipeline
+# Pipeline Execution Button
 st.sidebar.divider()
-run_analysis = st.sidebar.button("🚀 Avvia Reverse Engineering", type="primary", use_container_width=True)
+run_analysis = st.sidebar.button("🚀 Start Reverse Engineering", type="primary", use_container_width=True)
 
-# METRICHE & PIPELINE STATE
+# METRICS & PIPELINE STATE
 metadata = extract_technical_metadata(source_code)
 
 # WORKSPACE DUAL-VIEW (SPLIT 50/50)
 col_left, col_right = st.columns(2)
 
-# --- COLONNA SINISTRA: VISTA TECNICA ---
+# --- LEFT COLUMN: TECHNICAL VIEW ---
 with col_left:
-    st.subheader("💻 Vista Tecnica (Source & AST)")
-    st.markdown("**Codice Sorgente Legacy:**")
+    st.subheader("💻 Technical View (Source & AST)")
+    st.markdown("**Legacy Source Code:**")
     st.code(source_code, language=language)
 
-    st.markdown("**Metadati Estratti in Locale (AST & SQL Parser):**")
+    st.markdown("**Locally Extracted Metadata (AST & SQL Parser):**")
     m_col1, m_col2, m_col3 = st.columns(3)
-    m_col1.metric("Righe Codice", metadata["line_count"])
-    m_col2.metric("Tabelle SQL", len(metadata["detected_tables"]))
-    m_col3.metric("Logica Condizionale", "Sì" if metadata["has_conditionals"] else "No")
+    m_col1.metric("Lines of Code", metadata["line_count"])
+    m_col2.metric("SQL Tables", len(metadata["detected_tables"]))
+    m_col3.metric("Conditional Logic", "Yes" if metadata["has_conditionals"] else "No")
 
     if metadata["detected_tables"]:
-        st.info(f"🔍 **Tabelle SQL Riconosciute:** `{', '.join(metadata['detected_tables'])}`")
+        st.info(f"🔍 **Identified SQL Tables:** `{', '.join(metadata['detected_tables'])}`")
 
-# --- COLONNA DESTRA: VISTA BUSINESS ---
+# --- RIGHT COLUMN: BUSINESS VIEW ---
 with col_right:
-    st.subheader("📋 Vista Business (Knowledge Extraction)")
+    st.subheader("📋 Business View (Knowledge Extraction)")
 
     if run_analysis:
         if not api_key:
-            st.error("⚠️ Inserisci la chiave API Gemini nella barra laterale per procedere con l'analisi LLM.")
+            st.error("⚠️ Please enter your Gemini API key in the sidebar to proceed with LLM analysis.")
         else:
-            with st.spinner("AI al lavoro: estrazione regole e sintesi diagramma..."):
+            with st.spinner("AI at work: extracting rules and synthesizing diagram..."):
                 try:
                     result = analyze_legacy_code(source_code, metadata, api_key)
 
-                    # 1. Sommario Esecutivo
-                    st.success("**Scopo Funzionale del Processo:**")
+                    # 1. Executive Summary
+                    st.success("**Functional Purpose of the Process:**")
                     st.write(result.get("summary", ""))
 
-                    # 2. Diagramma Mermaid
-                    st.markdown("#### 📊 Flusso Operativo (Diagramma Mermaid)")
+                    # 2. Mermaid Diagram
+                    st.markdown("#### 📊 Operational Flow (Mermaid Diagram)")
                     mermaid_str = result.get("mermaid_code", "")
                     if mermaid_str:
                         st_mermaid(mermaid_str, height="300px")
                     
-                    # 3. Tabella delle Regole di Business
-                    st.markdown("#### ⚙️ Regole di Business (Decision Table)")
+                    # 3. Business Rules Table
+                    st.markdown("#### ⚙️ Business Rules (Decision Table)")
                     rules = result.get("business_rules", [])
                     if rules:
                         st.dataframe(rules, use_container_width=True)
 
-                    # 4. Prerequisiti & Note Tecniche
-                    with st.expander("📌 Prerequisiti e Note di Debito Tecnico"):
-                        st.markdown("**Prerequisiti di Processo:**")
+                    # 4. Prerequisites & Technical Notes
+                    with st.expander("📌 Prerequisites & Technical Debt Notes"):
+                        st.markdown("**Process Prerequisites:**")
                         for pre in result.get("prerequisites", []):
                             st.write(f"- {pre}")
-                        st.markdown("**Note di Architettura/Debito Tecnico:**")
-                        st.write(result.get("technical_notes", "Nessuna nota presente."))
+                        st.markdown("**Architecture / Technical Debt Notes:**")
+                        st.write(result.get("technical_notes", "No notes available."))
 
                 except Exception as e:
-                    st.error(f"Errore durante l'elaborazione dell'IA: {str(e)}")
+                    st.error(f"Error during AI processing: {str(e)}")
     else:
-        st.info("👈 Clicca su **'Avvia Reverse Engineering'** nella barra laterale per generare la documentazione di business e i diagrammi.")
+        st.info("👈 Click on **'Start Reverse Engineering'** in the sidebar to generate business documentation and diagrams.")

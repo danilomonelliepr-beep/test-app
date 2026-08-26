@@ -1,72 +1,24 @@
 import os
 import json
+import io
 import streamlit as st
 import sqlglot
 from sqlglot import exp
 import google.generativeai as genai
 from streamlit_mermaid import st_mermaid
 
-# Minimal configuration free of optional parameters causing TypeError
-st.set_page_config(page_title="Legacy Code Analyzer")
+# 1. Page Configuration (Wide Mode)
+st.set_page_config(page_title="Legacy Code Analyzer", layout="wide")
 
+# 2. Sidebar Configuration
 st.sidebar.title("⚙️ Configuration")
+
 api_key = st.sidebar.text_input(
     "Gemini API Key", 
     type="password", 
     value=os.environ.get("GEMINI_API_KEY", ""),
     help="Enter your Google Gemini API Key"
 )
-
-# -----------------------------------------------------------------------------
-# 2. SAMPLE LEGACY CODE FILES (DUMMY DATA FOR DEMO)
-# -----------------------------------------------------------------------------
-SAMPLE_COBOL = """
-000100 IDENTIFICATION DIVISION.
-000200 PROGRAM-ID. PROCESS-DISCOUNT.
-000300 DATA DIVISION.
-000400 WORKING-STORAGE SECTION.
-000500 01 CUST-BAL        PIC 9(6)V99.
-000600 01 DISC-RATE       PIC 9(2)V99.
-000700 01 CUST-STATUS     PIC X(10).
-000800 PROCEDURE DIVISION.
-000900     EXEC SQL
-001000         SELECT BALANCE, STATUS INTO :CUST-BAL, :CUST-STATUS 
-001100         FROM CUSTOMER_TABLE WHERE CUST_ID = :C-ID
-001200     END-EXEC.
-001300     IF CUST-STATUS = 'ACTIVE' THEN
-001400         IF CUST-BAL > 50000 THEN
-001500             MOVE 0.15 TO DISC-RATE
-001600         ELSE
-001700             MOVE 0.05 TO DISC-RATE
-001800         END-IF
-001900     ELSE
-002000         MOVE 0.00 TO DISC-RATE
-002100     END-IF.
-"""
-
-SAMPLE_JAVA = """
-public class OrderProcessor {
-    public void processOrder(String customerId, double orderAmount) {
-        // Embedded SQL Query
-        String query = "SELECT status, total_spent FROM users JOIN orders ON users.id = orders.user_id WHERE users.id = '" + customerId + "'";
-        
-        boolean isActive = true; // State simulation
-        if (isActive) {
-            if (orderAmount > 1000) {
-                applyDiscount(0.20); // 20% discount for large orders
-            } else {
-                applyDiscount(0.05); // 5% default discount
-            }
-        } else {
-            throw new IllegalArgumentException("Customer account is inactive");
-        }
-    }
-
-    private void applyDiscount(double rate) {
-        System.out.println("Applying discount: " + rate);
-    }
-}
-"""
 
 # -----------------------------------------------------------------------------
 # 3. UTILITY FUNCTIONS: AST & SQL PARSING
@@ -81,16 +33,15 @@ def parse_sql_tables(sql_text):
         return []
 
 def extract_technical_metadata(code):
-    """Simulates AST extraction of SQL constructs and basic metrics"""
-    lines = code.strip().split("\n")
+    """Extracts basic metadata from the source code"""
+    lines = code.strip().split("\n") if code.strip() else []
     sql_tables = []
     
-    # Basic SQL string search for demo purposes
     if "SELECT" in code.upper():
-        if "CUSTOMER_TABLE" in code.upper():
-            sql_tables = parse_sql_tables("SELECT BALANCE, STATUS FROM CUSTOMER_TABLE")
-        elif "USERS" in code.upper():
-            sql_tables = parse_sql_tables("SELECT status, total_spent FROM users JOIN orders ON users.id = orders.user_id")
+        try:
+            sql_tables = parse_sql_tables(code)
+        except Exception:
+            sql_tables = []
 
     return {
         "line_count": len(lines),
@@ -102,39 +53,35 @@ def extract_technical_metadata(code):
 # 4. LLM SERVICE CALLS (GOOGLE GEMINI)
 # -----------------------------------------------------------------------------
 def analyze_legacy_code(code, metadata, api_key):
-    """Sends code to Gemini with dynamic model selection and error handling."""
+    """Sends code to Gemini for reverse engineering analysis."""
     genai.configure(api_key=api_key)
     
-    # 1. Find a valid available model on your account
     selected_model_name = None
+    # Model configuration forced to gemini-3.6-flash
     priority_models = ["gemini-3.6-flash"]
     
     try:
-        # Retrieve the actual list of models supported by your API key
         available_models = [
             m.name.replace("models/", "") 
             for m in genai.list_models() 
             if "generateContent" in m.supported_generation_methods
         ]
         
-        # Pick the first compatible model present in priority list
         for target in priority_models:
             if target in available_models:
                 selected_model_name = target
                 break
                 
-        # If none from priority list is present, pick the first available
         if not selected_model_name and available_models:
             selected_model_name = available_models[0]
             
     except Exception:
-        # Safety fallback if list_models fails
+        # Direct fallback to gemini-3.6-flash if model list API call fails
         selected_model_name = "gemini-3.6-flash"
 
     if not selected_model_name:
-        raise ValueError("No valid Gemini model found for this API Key.")
+        selected_model_name = "gemini-3.6-flash"
 
-    # 2. Initialize the identified model
     model = genai.GenerativeModel(selected_model_name)
 
     system_prompt = f"""
@@ -164,13 +111,11 @@ def analyze_legacy_code(code, metadata, api_key):
     IMPORTANT for mermaid_code: Generate a clean 'graph TD' flowchart, use simple labels inside nodes without special characters that break Mermaid syntax.
     """
 
-    # 3. API Call
     response = model.generate_content(
         system_prompt,
         generation_config={"response_mime_type": "application/json"}
     )
     
-    # 4. Clean response text to prevent JSON parsing errors
     clean_text = response.text.strip()
     if clean_text.startswith("```json"):
         clean_text = clean_text[7:]
@@ -180,45 +125,42 @@ def analyze_legacy_code(code, metadata, api_key):
     return json.loads(clean_text.strip())
 
 # -----------------------------------------------------------------------------
-# 5. USER INTERFACE (STREAMLIT DUAL-VIEW)
+# 5. USER INTERFACE
 # -----------------------------------------------------------------------------
 st.title("🔄 Legacy Code to Business Knowledge Platform")
-st.caption("Hackathon Prototype: Transform legacy source code into actionable business logic & diagrams.")
+st.caption("Transform legacy source code into actionable business logic & visual diagrams.")
 
-# File Selection or Custom Input
-st.sidebar.subheader("📂 Codebase Explorer")
-file_option = st.sidebar.selectbox(
-    "Select a legacy module:",
-    ["COBOL: PROCESS-DISCOUNT.cbl", "JAVA: OrderProcessor.java", "Enter Custom Code"]
-)
+# Custom Code Input in Sidebar
+st.sidebar.subheader("📝 Source Code Input")
+source_code = st.sidebar.text_area("Paste legacy code here:", height=400)
 
-if file_option == "COBOL: PROCESS-DISCOUNT.cbl":
-    source_code = SAMPLE_COBOL
-    language = "cobol"
-elif file_option == "JAVA: OrderProcessor.java":
-    source_code = SAMPLE_JAVA
-    language = "java"
-else:
-    source_code = st.sidebar.text_area("Paste legacy code here:", height=300)
-    language = "text"
-
-# Pipeline Execution Button
-st.sidebar.divider()
 run_analysis = st.sidebar.button("🚀 Start Reverse Engineering", type="primary", use_container_width=True)
 
-# METRICS & PIPELINE STATE
-metadata = extract_technical_metadata(source_code)
-
-# WORKSPACE DUAL-VIEW (SPLIT 50/50)
+# Wide layout columns
 col_left, col_right = st.columns(2)
+
+# Extract basic metadata
+metadata = extract_technical_metadata(source_code)
 
 # --- LEFT COLUMN: TECHNICAL VIEW ---
 with col_left:
-    st.subheader("💻 Technical View (Source & AST)")
-    st.markdown("**Legacy Source Code:**")
-    st.code(source_code, language=language)
+    st.subheader("💻 Technical View (Code & AST)")
+    
+    if source_code:
+        st.markdown("**Source Code:**")
+        st.code(source_code, height=450)
+        
+        # Download Source Code Button
+        st.download_button(
+            label="💾 Download Source Code",
+            data=source_code,
+            file_name="source_code.txt",
+            mime="text/plain"
+        )
+    else:
+        st.info("👈 Paste your code in the sidebar to get started.")
 
-    st.markdown("**Locally Extracted Metadata (AST & SQL Parser):**")
+    st.markdown("**Locally Extracted Metadata:**")
     m_col1, m_col2, m_col3 = st.columns(3)
     m_col1.metric("Lines of Code", metadata["line_count"])
     m_col2.metric("SQL Tables", len(metadata["detected_tables"]))
@@ -232,38 +174,65 @@ with col_right:
     st.subheader("📋 Business View (Knowledge Extraction)")
 
     if run_analysis:
-        if not api_key:
-            st.error("⚠️ Please enter your Gemini API key in the sidebar to proceed with LLM analysis.")
+        if not source_code.strip():
+            st.error("⚠️ Please enter source code in the sidebar before starting the analysis.")
+        elif not api_key:
+            st.error("⚠️ Please enter your Gemini API key in the sidebar.")
         else:
             with st.spinner("AI at work: extracting rules and synthesizing diagram..."):
                 try:
                     result = analyze_legacy_code(source_code, metadata, api_key)
-
-                    # 1. Executive Summary
-                    st.success("**Functional Purpose of the Process:**")
-                    st.write(result.get("summary", ""))
-
-                    # 2. Mermaid Diagram
-                    st.markdown("#### 📊 Operational Flow (Mermaid Diagram)")
-                    mermaid_str = result.get("mermaid_code", "")
-                    if mermaid_str:
-                        st_mermaid(mermaid_str, height="300px")
-                    
-                    # 3. Business Rules Table
-                    st.markdown("#### ⚙️ Business Rules (Decision Table)")
-                    rules = result.get("business_rules", [])
-                    if rules:
-                        st.dataframe(rules, use_container_width=True)
-
-                    # 4. Prerequisites & Technical Notes
-                    with st.expander("📌 Prerequisites & Technical Debt Notes"):
-                        st.markdown("**Process Prerequisites:**")
-                        for pre in result.get("prerequisites", []):
-                            st.write(f"- {pre}")
-                        st.markdown("**Architecture / Technical Debt Notes:**")
-                        st.write(result.get("technical_notes", "No notes available."))
-
+                    st.session_state['analysis_result'] = result
                 except Exception as e:
                     st.error(f"Error during AI processing: {str(e)}")
-    else:
-        st.info("👈 Click on **'Start Reverse Engineering'** in the sidebar to generate business documentation and diagrams.")
+
+    # Display results saved in session state
+    if 'analysis_result' in st.session_state:
+        res = st.session_state['analysis_result']
+
+        # 1. Executive Summary
+        st.success("**Functional Purpose of the Process:**")
+        st.write(res.get("summary", ""))
+
+        # 2. Mermaid Diagram
+        st.markdown("#### 📊 Operational Flow (Mermaid Diagram)")
+        mermaid_str = res.get("mermaid_code", "")
+        if mermaid_str:
+            st_mermaid(mermaid_str, height="400px")
+            
+            # Download Mermaid Code Button
+            st.download_button(
+                label="💾 Download Mermaid Diagram (.mmd)",
+                data=mermaid_str,
+                file_name="flow_diagram.mmd",
+                mime="text/plain"
+            )
+
+        # 3. Business Rules Table
+        st.markdown("#### ⚙️ Business Rules (Decision Table)")
+        rules = res.get("business_rules", [])
+        if rules:
+            st.dataframe(rules, use_container_width=True)
+
+        # 4. Prerequisites & Technical Debt Notes
+        with st.expander("📌 Prerequisites & Technical Debt Notes", expanded=True):
+            st.markdown("**Process Prerequisites:**")
+            for pre in res.get("prerequisites", []):
+                st.write(f"- {pre}")
+            st.markdown("**Architecture / Technical Debt Notes:**")
+            st.write(res.get("technical_notes", "No notes available."))
+
+        st.divider()
+        
+        # Download Full Analysis JSON Button
+        json_bytes = json.dumps(res, indent=2).encode('utf-8')
+        st.download_button(
+            label="📥 Download Full Analysis (JSON)",
+            data=json_bytes,
+            file_name="business_analysis.json",
+            mime="application/json",
+            type="primary",
+            use_container_width=True
+        )
+    elif not run_analysis:
+        st.info("👈 Click on **'Start Reverse Engineering'** in the sidebar to generate the analysis.")

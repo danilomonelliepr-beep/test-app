@@ -87,6 +87,7 @@ def analyze_legacy_code(code, metadata, api_key):
     system_prompt = f"""
     You are a specialist in Legacy Code Reverse Engineering and Business Analysis.
     Analyze the following source code and synthetic metadata extracted from the AST.
+    Provide a very detailed explanation of the logic, clearly describing how the code behaves and how each part of the implementation works.
 
     EXTRACTED METADATA:
     - Identified SQL Tables: {metadata['detected_tables']}

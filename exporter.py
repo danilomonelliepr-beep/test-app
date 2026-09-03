@@ -2,6 +2,9 @@ import io
 import html
 import base64
 import requests
+import zlib
+import re
+import streamlit as st
 from typing import Dict, Any, List, Optional
 
 # ReportLab (Engine PDF)
@@ -25,50 +28,60 @@ from docx.oxml.ns import nsdecls
 # =============================================================================
 # HELPER: CONVERSIONE MERMAID IN IMMAGINE PNG
 # =============================================================================
-def get_mermaid_image_bytes(mermaid_code: str) -> Optional[bytes]:
-    """Pulizia avanzata della sintassi Mermaid e rendering tramite mermaid.ink con base64 URL-safe."""
+
+def get_mermaid_image_bytes(mermaid_code: str, diag_title: str = "Diagram") -> Optional[bytes]:
     if not mermaid_code or not str(mermaid_code).strip():
+        st.warning(f"⚠️ Diagramma '{diag_title}': Codice vuoto o assente nei dati.")
         return None
+        
     try:
         clean_code = str(mermaid_code).strip()
         
-        # 1. Rimuove i blocchi di codice Markdown (```mermaid ... ```)
+        # 1. Rimuove blocchi markdown ```mermaid ... ```
         if clean_code.startswith("```"):
             lines = clean_code.splitlines()
-            # Scarta la prima riga se contiene ``` e l'ultima se è ```
             if lines[0].startswith("```"):
                 lines = lines[1:]
             if lines and lines[-1].strip() == "```":
                 lines = lines[:-1]
             clean_code = "\n".join(lines).strip()
 
-        # 2. Rimuove eventuali righe vuote iniziali o spazi residui
+        # 2. Estrae solo la parte valida di Mermaid (evita testo spazzatura prima o dopo)
+        match = re.search(r'(graph|flowchart|sequenceDiagram|erDiagram|classDiagram|gantt)[\s\S]*', clean_code)
+        if match:
+            clean_code = match.group(0)
+
         clean_code = clean_code.strip()
         if not clean_code:
             return None
 
-        # 3. Encoding URL-Safe per evitare che caratteri come '+', '/' rompano la richiesta HTTP
-        graph_bytes = clean_code.encode('utf-8')
-        base64_bytes = base64.urlsafe_b64encode(graph_bytes)
-        base64_string = base64_bytes.decode('utf-8').rstrip('=')
+        # 3. Chiamata a Kroki.io via Deflate Compression (più stabile di mermaid.ink)
+        compressed = zlib.compress(clean_code.encode('utf-8'))
+        base64_str = base64.urlsafe_b64encode(compressed).decode('utf-8')
         
-        # 4. Richiesta HTTP con User-Agent standard e timeout esteso a 10s
-        url = f"[https://mermaid.ink/img/](https://mermaid.ink/img/){base64_string}"
+        url = f"[https://kroki.io/mermaid/png/](https://kroki.io/mermaid/png/){base64_str}"
         headers = {'User-Agent': 'Mozilla/5.0'}
-        
         response = requests.get(url, headers=headers, timeout=10)
         
-        # 5. Verifica che la risposta sia un'immagine PNG/JPEG valida
         if response.status_code == 200 and len(response.content) > 200:
+            st.success(f"✅ Diagramma '{diag_title}': Convertito in PNG con successo!")
             return response.content
         else:
-            print(f"[Mermaid Render Error] HTTP Status: {response.status_code} | Text: {response.text[:100]}")
+            # Secondo tentativo di Fallback su Mermaid.ink
+            st.info(f"🔄 Kroki fallito ({response.status_code}) per '{diag_title}'. Tentativo su Mermaid.ink...")
+            base64_m = base64.urlsafe_b64encode(clean_code.encode('utf-8')).decode('utf-8').rstrip('=')
+            res2 = requests.get(f"[https://mermaid.ink/img/](https://mermaid.ink/img/){base64_m}", headers=headers, timeout=10)
+            
+            if res2.status_code == 200 and len(res2.content) > 200:
+                st.success(f"✅ Diagramma '{diag_title}': Convertito con Mermaid.ink!")
+                return res2.content
+            else:
+                st.error(f"❌ Errore Rendering '{diag_title}': Sintassi Mermaid non valida o rifiutata dal server (HTTP {res2.status_code}).")
             
     except Exception as e:
-        print(f"[Mermaid Exception] {str(e)}")
+        st.error(f"💥 Eccezione durante il rendering di '{diag_title}': {str(e)}")
         
     return None
-
 
 # =============================================================================
 # HELPERS PER STILIZZAZIONE DOCX
@@ -277,16 +290,20 @@ def generate_pdf_report(analysis_result: Dict[str, Any], metadata: Dict[str, Any
     ]
 
     has_diagrams = False
+    
+    # --- DIAGRAMMI (PDF / DOCX) ---
     for diag_title, diag_code in diagrams_map:
         if diag_code and str(diag_code).strip():
             has_diagrams = True
             story.append(Paragraph(f"<b>{diag_title}</b>", body_style))
-            img_bytes = get_mermaid_image_bytes(str(diag_code))
+            
+            # Passiamo anche il titolo per il debug visuale
+            img_bytes = get_mermaid_image_bytes(str(diag_code), diag_title)
+            
             if img_bytes:
                 img_buf = io.BytesIO(img_bytes)
                 story.append(Image(img_buf, width=720, height=240))
             else:
-                # Rendering fallback del codice sorgente se l'API non è raggiungibile
                 clean_txt = html.escape(str(diag_code).strip()).replace("\n", "<br/>")
                 fallback_table = Table([[Paragraph(f"<b>Mermaid Source Code:</b><br/>{clean_txt}", code_style)]], colWidths=[780])
                 fallback_table.setStyle(TableStyle([
@@ -294,8 +311,6 @@ def generate_pdf_report(analysis_result: Dict[str, Any], metadata: Dict[str, Any
                     ('BOX', (0,0), (-1,-1), 0.5, colors.HexColor('#CBD5E0')),
                     ('TOPPADDING', (0,0), (-1,-1), 6),
                     ('BOTTOMPADDING', (0,0), (-1,-1), 6),
-                    ('LEFTPADDING', (0,0), (-1,-1), 6),
-                    ('RIGHTPADDING', (0,0), (-1,-1), 6),
                 ]))
                 story.append(fallback_table)
             story.append(Spacer(1, 10))

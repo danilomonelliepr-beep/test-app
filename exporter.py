@@ -83,19 +83,37 @@ def get_mermaid_image_bytes(
 
 
 # =============================================================================
-# HELPERS UTILITY & STILIZZAZIONE DOCX
+# HELPERS UTILITY & SEARCH PROFONDA
 # =============================================================================
 
 
-def extract_first_valid(data: Dict[str, Any], keys: List[str]) -> Optional[str]:
-    """Cerca la prima chiave valida all'interno di un dizionario."""
-    if not isinstance(data, dict):
-        return None
-    for k in keys:
-        val = data.get(k)
-        if val is not None and str(val).strip() and str(val).strip().upper() != "N/A":
-            return str(val).strip()
+def deep_search_key(data: Any, target_keys: List[str]) -> Optional[str]:
+    """Scansiona ricorsivamente tutto il JSON per trovare la prima chiave corrispondente valida."""
+    if isinstance(data, dict):
+        # 1. Cerca al livello corrente
+        for k, v in data.items():
+            if k.lower() in [tk.lower() for tk in target_keys]:
+                if v is not None and str(v).strip() and str(v).strip().upper() != "N/A":
+                    if isinstance(v, (dict, list)):
+                        return str(v)
+                    return str(v).strip()
+        # 2. Ricerca nei sotto-oggetti
+        for k, v in data.items():
+            res = deep_search_key(v, target_keys)
+            if res:
+                return res
+    elif isinstance(data, list):
+        for item in data:
+            res = deep_search_key(item, target_keys)
+            if res:
+                return res
     return None
+
+
+def extract_field(data: Dict[str, Any], keys: List[str], default: str = "N/A") -> str:
+    """Estrae un campo cercando prima al livello radice e poi in profondità."""
+    res = deep_search_key(data, keys)
+    return res if res else default
 
 
 def set_cell_background(cell, hex_color: str):
@@ -130,7 +148,6 @@ def generate_pdf_report(
 ) -> bytes:
     buffer = io.BytesIO()
 
-    # Impostazione della pagina A4 orizzontale (Larghezza utile: ~780pt)
     doc = SimpleDocTemplate(
         buffer,
         pagesize=landscape(A4),
@@ -269,15 +286,17 @@ def generate_pdf_report(
     # --- OVERVIEW (SUMMARY, PURPOSE, NOTES) ---
     story.append(Paragraph("1. Executive Summary & Purpose", h2_style))
 
-    exec_summary = extract_first_valid(
+    exec_summary = extract_field(
         analysis_result,
         ["executive_summary", "summary", "overview", "description"],
-    ) or "N/A"
-    app_purpose = extract_first_valid(
+        default="N/A",
+    )
+    app_purpose = extract_field(
         analysis_result,
         ["application_purpose", "purpose", "system_purpose", "goal", "objective"],
-    ) or "N/A"
-    app_notes = extract_first_valid(
+        default="N/A",
+    )
+    app_notes = extract_field(
         analysis_result,
         [
             "notes",
@@ -286,7 +305,10 @@ def generate_pdf_report(
             "comments",
             "observations",
             "extra_notes",
+            "note",
+            "developer_notes",
         ],
+        default="No additional notes provided",
     )
 
     story.append(
@@ -301,13 +323,12 @@ def generate_pdf_report(
             body_style,
         )
     )
-
-    if app_notes:
-        story.append(
-            Paragraph(
-                f"<b>Notes:</b> {html.escape(app_notes)}", body_style
-            )
+    story.append(
+        Paragraph(
+            f"<b>Notes:</b> {html.escape(app_notes)}",
+            body_style,
         )
+    )
 
     story.append(Spacer(1, 6))
 
@@ -733,15 +754,17 @@ def generate_docx_report(
     # --- 1. EXECUTIVE SUMMARY, PURPOSE & NOTES ---
     doc.add_heading("1. Executive Summary & Purpose", level=1)
 
-    exec_summary = extract_first_valid(
+    exec_summary = extract_field(
         analysis_result,
         ["executive_summary", "summary", "overview", "description"],
-    ) or "N/A"
-    app_purpose = extract_first_valid(
+        default="N/A",
+    )
+    app_purpose = extract_field(
         analysis_result,
         ["application_purpose", "purpose", "system_purpose", "goal", "objective"],
-    ) or "N/A"
-    app_notes = extract_first_valid(
+        default="N/A",
+    )
+    app_notes = extract_field(
         analysis_result,
         [
             "notes",
@@ -750,7 +773,10 @@ def generate_docx_report(
             "comments",
             "observations",
             "extra_notes",
+            "note",
+            "developer_notes",
         ],
+        default="No additional notes provided",
     )
 
     p_exec = doc.add_paragraph()
@@ -761,10 +787,9 @@ def generate_docx_report(
     p_purp.add_run("Application Purpose: ").bold = True
     p_purp.add_run(app_purpose)
 
-    if app_notes:
-        p_notes = doc.add_paragraph()
-        p_notes.add_run("Notes: ").bold = True
-        p_notes.add_run(app_notes)
+    p_notes = doc.add_paragraph()
+    p_notes.add_run("Notes: ").bold = True
+    p_notes.add_run(app_notes)
 
     doc.add_paragraph()  # Spaziatore
 

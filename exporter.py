@@ -299,6 +299,7 @@ def generate_pdf_report(
     app_notes = extract_field(
         analysis_result,
         [
+            "technical_notes",  # <-- Aggiunto qui!
             "notes",
             "additional_notes",
             "remarks",
@@ -767,6 +768,7 @@ def generate_docx_report(
     app_notes = extract_field(
         analysis_result,
         [
+            "technical_notes",  # <-- Aggiunto qui!
             "notes",
             "additional_notes",
             "remarks",

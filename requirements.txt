@@ -1,4 +1,7 @@
-streamlit>=1.40.0
-google-generativeai
-sqlglot
+streamlit
 streamlit-mermaid
+sqlglot
+openai
+anthropic
+google-genai
+pandas

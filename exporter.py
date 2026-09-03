@@ -1,14 +1,16 @@
 import io
 import html
-from typing import Dict, Any, List
+import base64
+import requests
+from typing import Dict, Any, List, Optional
 
-# ReportLab (PDF Engine 100% Python)
+# ReportLab (Engine PDF 100% Python)
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-# Python-Docx (Word Engine)
+# Python-Docx (Engine Word)
 import docx
 from docx import Document
 from docx.shared import Inches, Pt, RGBColor
@@ -19,16 +21,35 @@ from docx.oxml.ns import nsdecls
 
 
 # =============================================================================
-# HELPER FUNCTIONS FOR DOCX STYLING
+# HELPER: MERMAID CODE TO PNG BYTES
+# =============================================================================
+def get_mermaid_image_bytes(mermaid_code: str) -> Optional[bytes]:
+    """Converte una stringa di codice Mermaid in un'immagine PNG tramite l'API mermaid.ink."""
+    if not mermaid_code or not mermaid_code.strip():
+        return None
+    try:
+        graph_bytes = mermaid_code.strip().encode('utf-8')
+        base64_bytes = base64.b64encode(graph_bytes)
+        base64_string = base64_bytes.decode('utf-8')
+        
+        url = f"https://mermaid.ink/img/{base64_string}"
+        response = requests.get(url, timeout=5)
+        if response.status_code == 200:
+            return response.content
+    except Exception:
+        pass
+    return None
+
+
+# =============================================================================
+# HELPERS FOR DOCX STYLING
 # =============================================================================
 def set_cell_background(cell, hex_color: str):
-    """Imposta il colore di sfondo di una cella in Word."""
     tcPr = cell._element.get_or_add_tcPr()
     shd = parse_xml(f'<w:shd {nsdecls("w")} w:fill="{hex_color}"/>')
     tcPr.append(shd)
 
 def set_cell_margins(cell, top=100, bottom=100, left=150, right=150):
-    """Imposta il padding interno di una cella in Word (1 pt = 20 dxa)."""
     tcPr = cell._element.get_or_add_tcPr()
     tcMar = parse_xml(
         f'<w:tcMar {nsdecls("w")}>'
@@ -41,7 +62,6 @@ def set_cell_margins(cell, top=100, bottom=100, left=150, right=150):
     tcPr.append(tcMar)
 
 def add_callout_box(doc: Document, title: str, text: str):
-    """Crea un box in evidenza con bordo sinistro colorato in Word."""
     table = doc.add_table(rows=1, cols=1)
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     table.autofit = False
@@ -79,10 +99,9 @@ def add_callout_box(doc: Document, title: str, text: str):
 
 
 # =============================================================================
-# 1. EXPORT TO PDF (REPORTLAB - NATIVE PYTHON)
+# 1. EXPORT TO PDF (REPORTLAB)
 # =============================================================================
 def generate_pdf_report(analysis_result: Dict[str, Any], metadata: Dict[str, Any], provider: str, model_name: str) -> bytes:
-    """Genera un report PDF professionale utilizzando ReportLab (senza dipendenze C)."""
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -96,76 +115,34 @@ def generate_pdf_report(analysis_result: Dict[str, Any], metadata: Dict[str, Any
     styles = getSampleStyleSheet()
     
     title_style = ParagraphStyle(
-        'DocTitle',
-        parent=styles['Heading1'],
-        fontName='Helvetica-Bold',
-        fontSize=18,
-        leading=22,
-        textColor=colors.HexColor('#1A365D'),
-        spaceAfter=4
+        'DocTitle', parent=styles['Heading1'], fontName='Helvetica-Bold', fontSize=18, leading=22, textColor=colors.HexColor('#1A365D'), spaceAfter=4
     )
-    
     sub_style = ParagraphStyle(
-        'DocSub',
-        parent=styles['Normal'],
-        fontName='Helvetica',
-        fontSize=9,
-        leading=12,
-        textColor=colors.HexColor('#718096'),
-        spaceAfter=14
+        'DocSub', parent=styles['Normal'], fontName='Helvetica', fontSize=9, leading=12, textColor=colors.HexColor('#718096'), spaceAfter=14
     )
-    
     h2_style = ParagraphStyle(
-        'SectionHeader',
-        parent=styles['Heading2'],
-        fontName='Helvetica-Bold',
-        fontSize=12,
-        leading=15,
-        textColor=colors.HexColor('#1A365D'),
-        spaceBefore=14,
-        spaceAfter=6,
-        keepWithNext=True
+        'SectionHeader', parent=styles['Heading2'], fontName='Helvetica-Bold', fontSize=11, leading=14, textColor=colors.HexColor('#1A365D'), spaceBefore=14, spaceAfter=6, keepWithNext=True
     )
-    
     body_style = ParagraphStyle(
-        'BodyTextCustom',
-        parent=styles['Normal'],
-        fontName='Helvetica',
-        fontSize=8.5,
-        leading=11.5,
-        textColor=colors.HexColor('#2D3748'),
-        spaceAfter=8
+        'BodyTextCustom', parent=styles['Normal'], fontName='Helvetica', fontSize=8.5, leading=11.5, textColor=colors.HexColor('#2D3748'), spaceAfter=8
     )
-    
     cell_style = ParagraphStyle(
-        'TableCell',
-        parent=styles['Normal'],
-        fontName='Helvetica',
-        fontSize=8,
-        leading=10,
-        textColor=colors.HexColor('#2D3748')
+        'TableCell', parent=styles['Normal'], fontName='Helvetica', fontSize=7.5, leading=9.5, textColor=colors.HexColor('#2D3748')
     )
-    
     header_cell_style = ParagraphStyle(
-        'HeaderTableCell',
-        parent=styles['Normal'],
-        fontName='Helvetica-Bold',
-        fontSize=8,
-        leading=10,
-        textColor=colors.white
+        'HeaderTableCell', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=7.5, leading=9.5, textColor=colors.white
     )
 
     story = []
 
-    # Header Documento
+    # Header
     story.append(Paragraph("Legacy System Knowledge Extraction", title_style))
     story.append(Paragraph(
         f"Reverse Engineering Report &nbsp;|&nbsp; Provider: <b>{html.escape(provider)}</b> ({html.escape(model_name)}) &nbsp;|&nbsp; Files: <b>{metadata.get('file_count', 0)}</b>",
         sub_style
     ))
-    story.append(Spacer(1, 4))
 
-    # Metric Box Summary Table
+    # Metric Table Summary
     metric_data = [
         [
             Paragraph(f"<b>{metadata.get('file_count', 0)}</b><br/><font size=6 color='#718096'>FILES</font>", cell_style),
@@ -189,13 +166,10 @@ def generate_pdf_report(analysis_result: Dict[str, Any], metadata: Dict[str, Any
 
     # 1. Executive Summary & Purpose
     story.append(Paragraph("1. Executive Summary & Application Purpose", h2_style))
-    purpose_text = html.escape(analysis_result.get('application_purpose', 'N/A'))
-    story.append(Paragraph(f"<b>Core Purpose:</b> {purpose_text}", body_style))
-    exec_text = html.escape(analysis_result.get('executive_summary', 'N/A'))
-    story.append(Paragraph(exec_text, body_style))
-    story.append(Spacer(1, 8))
+    story.append(Paragraph(f"<b>Core Purpose:</b> {html.escape(analysis_result.get('application_purpose', 'N/A'))}", body_style))
+    story.append(Paragraph(html.escape(analysis_result.get('executive_summary', 'N/A')), body_style))
 
-    # Helper Generazione Tabelle PDF
+    # Helper Tabelle PDF
     def build_pdf_table(headers: List[str], data: List[Dict[str, Any]], keys: List[str], col_widths: List[int]):
         table_rows = [[Paragraph(f"<b>{h}</b>", header_cell_style) for h in headers]]
         
@@ -213,8 +187,7 @@ def generate_pdf_report(analysis_result: Dict[str, Any], metadata: Dict[str, Any
                     val = html.escape(str(item.get(key, "")))
                     if key == "severity":
                         sev = val.upper()
-                        color_map = {"CRITICAL": "#742A2A", "HIGH": "#744210", "MEDIUM": "#2D3748", "LOW": "#234E52"}
-                        c = color_map.get(sev, "#2D3748")
+                        c = {"CRITICAL": "#742A2A", "HIGH": "#744210", "MEDIUM": "#2D3748", "LOW": "#234E52"}.get(sev, "#2D3748")
                         val = f"<font color='{c}'><b>{sev}</b></font>"
                     row_cells.append(Paragraph(val, cell_style))
                 
@@ -227,10 +200,10 @@ def generate_pdf_report(analysis_result: Dict[str, Any], metadata: Dict[str, Any
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
             ('INNERGRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#E2E8F0')),
             ('BOX', (0, 0), (-1, -1), 0.5, colors.HexColor('#CBD5E0')),
-            ('TOPPADDING', (0, 0), (-1, -1), 5),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
-            ('LEFTPADDING', (0, 0), (-1, -1), 5),
-            ('RIGHTPADDING', (0, 0), (-1, -1), 5),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('LEFTPADDING', (0, 0), (-1, -1), 4),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 4),
         ]))
         return t
 
@@ -240,68 +213,85 @@ def generate_pdf_report(analysis_result: Dict[str, Any], metadata: Dict[str, Any
         ["Status", "Rule ID", "Rule Name", "Condition / Action", "Impact"],
         analysis_result.get("business_rules", []),
         ["sme_approved", "rule_id", "rule_name", "condition", "business_impact"],
-        [60, 50, 110, 170, 130]
+        [55, 50, 110, 175, 130]
     ))
-    story.append(Spacer(1, 10))
 
     # 3. Components
-    story.append(Paragraph("3. System Components", h2_style))
+    story.append(Paragraph("3. System Components Architecture", h2_style))
     story.append(build_pdf_table(
         ["Status", "Component Name", "Type", "Source File"],
         analysis_result.get("components", []),
         ["sme_approved", "component_name", "component_type", "source_file"],
-        [60, 160, 110, 190]
+        [55, 160, 110, 195]
     ))
-    story.append(Spacer(1, 10))
 
-    # 4. Technical Risks
-    story.append(Paragraph("4. Technical Risks & Vulnerabilities", h2_style))
+    # 4. Dependencies & Data Flow
+    story.append(Paragraph("4. Dependencies & Data Flow", h2_style))
+    story.append(build_pdf_table(
+        ["Status", "Target / Entity", "Access Type", "Component Source"],
+        analysis_result.get("dependencies", []),
+        ["sme_approved", "target_entity", "access_type", "source_component"],
+        [55, 170, 100, 195]
+    ))
+
+    # 5. Technical Risks
+    story.append(Paragraph("5. Technical Risks & Vulnerabilities", h2_style))
     story.append(build_pdf_table(
         ["Status", "Risk ID", "Severity", "Description", "Recommendation"],
         analysis_result.get("technical_risks", []),
         ["sme_approved", "risk_id", "severity", "description", "recommendation"],
-        [60, 50, 55, 175, 180]
+        [55, 50, 55, 180, 180]
     ))
+
+    # 6. Mermaid Diagrams Rendering
+    mermaid_code = analysis_result.get("mermaid_diagram") or analysis_result.get("architecture_diagram")
+    if mermaid_code:
+        story.append(Paragraph("6. Architecture & Data Flow Diagram", h2_style))
+        img_data = get_mermaid_image_bytes(mermaid_code)
+        if img_data:
+            img_buffer = io.BytesIO(img_data)
+            story.append(Image(img_buffer, width=480, height=260))
+        else:
+            # Fallback se l'API non risponde: stampa il codice sintattico
+            story.append(Paragraph(f"<font fontName='Courier' size=7>{html.escape(mermaid_code)}</font>", body_style))
 
     doc.build(story)
     return buffer.getvalue()
 
 
 # =============================================================================
-# 2. EXPORT TO WORD (.DOCX via PYTHON-DOCX)
+# 2. EXPORT TO WORD (.DOCX)
 # =============================================================================
 def generate_docx_report(analysis_result: Dict[str, Any], metadata: Dict[str, Any], provider: str, model_name: str) -> bytes:
-    """Genera un documento Word (.docx) modificabile con tabelle formattate."""
     doc = Document()
     
-    # Margini di 1 pollice
     sections = doc.sections
     for section in sections:
-        section.top_margin = Inches(1)
-        section.bottom_margin = Inches(1)
-        section.left_margin = Inches(1)
-        section.right_margin = Inches(1)
+        section.top_margin = Inches(0.8)
+        section.bottom_margin = Inches(0.8)
+        section.left_margin = Inches(0.8)
+        section.right_margin = Inches(0.8)
         
     style = doc.styles['Normal']
     font = style.font
     font.name = 'Arial'
-    font.size = Pt(10)
+    font.size = Pt(9.5)
     font.color.rgb = RGBColor(45, 55, 72)
     
-    # Titolo
+    # Title
     title_p = doc.add_paragraph()
     run_title = title_p.add_run("Legacy Application Knowledge Extraction")
     run_title.bold = True
-    run_title.font.size = Pt(20)
+    run_title.font.size = Pt(18)
     run_title.font.color.rgb = RGBColor(26, 54, 93)
     
     sub_p = doc.add_paragraph()
-    sub_p.paragraph_format.space_after = Pt(14)
-    run_sub = sub_p.add_run(f"Reverse Engineering & SME Technical Documentation  |  Provider: {provider} ({model_name})")
-    run_sub.font.size = Pt(9.5)
+    sub_p.paragraph_format.space_after = Pt(12)
+    run_sub = sub_p.add_run(f"Reverse Engineering Documentation | Provider: {provider} ({model_name})")
+    run_sub.font.size = Pt(9)
     run_sub.font.color.rgb = RGBColor(113, 128, 150)
     
-    # 1. Purpose & Executive Summary
+    # 1. Executive Summary
     h1 = doc.add_heading(level=1)
     h1.add_run("1. Executive Summary & Application Purpose").font.color.rgb = RGBColor(26, 54, 93)
     
@@ -314,34 +304,31 @@ def generate_docx_report(analysis_result: Dict[str, Any], metadata: Dict[str, An
         table.alignment = WD_TABLE_ALIGNMENT.CENTER
         table.autofit = True
         
-        # Header Row
         hdr_cells = table.rows[0].cells
         for i, header_text in enumerate(headers):
             hdr_cells[i].text = header_text
             set_cell_background(hdr_cells[i], "2D3748")
-            set_cell_margins(hdr_cells[i], top=100, bottom=100, left=120, right=120)
+            set_cell_margins(hdr_cells[i], top=90, bottom=90, left=100, right=100)
             p = hdr_cells[i].paragraphs[0]
             for run in p.runs:
                 run.font.bold = True
-                run.font.size = Pt(8.5)
+                run.font.size = Pt(8)
                 run.font.color.rgb = RGBColor(255, 255, 255)
         
-        # Data Rows
         for item in data:
             row_cells = table.add_row().cells
             sme = "Approved" if item.get("sme_approved", False) else "Pending"
-            
             row_values = [sme] + [str(item.get(k, "")) for k in keys[1:]]
             
             for i, val in enumerate(row_values):
                 row_cells[i].text = val
-                set_cell_margins(row_cells[i], top=80, bottom=80, left=120, right=120)
+                set_cell_margins(row_cells[i], top=70, bottom=70, left=100, right=100)
                 p = row_cells[i].paragraphs[0]
                 p.paragraph_format.space_after = Pt(0)
                 p.paragraph_format.space_before = Pt(0)
                 
                 for run in p.runs:
-                    run.font.size = Pt(8.5)
+                    run.font.size = Pt(8)
                     if i == 0:
                         run.font.bold = True
                         run.font.color.rgb = RGBColor(34, 84, 61) if sme == "Approved" else RGBColor(116, 66, 16)
@@ -359,21 +346,45 @@ def generate_docx_report(analysis_result: Dict[str, Any], metadata: Dict[str, An
 
     # 3. Components
     h3 = doc.add_heading(level=1)
-    h3.add_run("3. System Components").font.color.rgb = RGBColor(26, 54, 93)
+    h3.add_run("3. System Components Architecture").font.color.rgb = RGBColor(26, 54, 93)
     create_docx_table(
         ["Status", "Component Name", "Type", "Source File"],
         analysis_result.get("components", []),
         ["sme_approved", "component_name", "component_type", "source_file"]
     )
 
-    # 4. Technical Risks
+    # 4. Dependencies & Data Flow
     h4 = doc.add_heading(level=1)
-    h4.add_run("4. Technical Risks").font.color.rgb = RGBColor(26, 54, 93)
+    h4.add_run("4. Dependencies & Data Flow").font.color.rgb = RGBColor(26, 54, 93)
+    create_docx_table(
+        ["Status", "Target / Entity", "Access Type", "Component Source"],
+        analysis_result.get("dependencies", []),
+        ["sme_approved", "target_entity", "access_type", "source_component"]
+    )
+
+    # 5. Technical Risks
+    h5 = doc.add_heading(level=1)
+    h5.add_run("5. Technical Risks & Vulnerabilities").font.color.rgb = RGBColor(26, 54, 93)
     create_docx_table(
         ["Status", "Risk ID", "Severity", "Description", "Recommendation"],
         analysis_result.get("technical_risks", []),
         ["sme_approved", "risk_id", "severity", "description", "recommendation"]
     )
+
+    # 6. Mermaid Diagram
+    mermaid_code = analysis_result.get("mermaid_diagram") or analysis_result.get("architecture_diagram")
+    if mermaid_code:
+        h6 = doc.add_heading(level=1)
+        h6.add_run("6. Architecture & Data Flow Diagram").font.color.rgb = RGBColor(26, 54, 93)
+        
+        img_data = get_mermaid_image_bytes(mermaid_code)
+        if img_data:
+            img_buffer = io.BytesIO(img_data)
+            doc.add_picture(img_buffer, width=Inches(6.2))
+        else:
+            p_code = doc.add_paragraph(mermaid_code)
+            p_code.style.font.name = 'Courier New'
+            p_code.style.font.size = Pt(8)
 
     buffer = io.BytesIO()
     doc.save(buffer)

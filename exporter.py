@@ -29,61 +29,46 @@ from docx.oxml.ns import nsdecls
 # HELPER: CONVERSIONE MERMAID IN IMMAGINE PNG
 # =============================================================================
 
-def get_mermaid_image_bytes(mermaid_code: str, diag_title: str = "Diagram") -> Optional[bytes]:
+def get_mermaid_image_bytes(mermaid_code: str) -> Optional[bytes]:
     if not mermaid_code or not str(mermaid_code).strip():
-        st.warning(f"⚠️ Diagramma '{diag_title}': Codice vuoto o assente nei dati.")
         return None
-        
+
     try:
         clean_code = str(mermaid_code).strip()
-        
-        # 1. Rimuove blocchi markdown ```mermaid ... ```
-        if clean_code.startswith("```"):
-            lines = clean_code.splitlines()
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            clean_code = "\n".join(lines).strip()
 
-        # 2. Estrae solo la parte valida di Mermaid
-        match = re.search(r'(graph|flowchart|sequenceDiagram|erDiagram|classDiagram|gantt)[\s\S]*', clean_code)
-        if match:
-            clean_code = match.group(0)
+        # 1. Rimuove blocchi markdown ```mermaid o ```
+        clean_code = re.sub(r"^```(?:mermaid)?", "", clean_code, flags=re.MULTILINE)
+        clean_code = re.sub(r"^```$", "", clean_code, flags=re.MULTILINE).strip()
 
-        clean_code = clean_code.strip()
+        # 2. Rimuove entità HTML se il testo è stato codificato precedentemente
+        clean_code = html.unescape(clean_code)
+
         if not clean_code:
             return None
 
-        # 3. Compressione e Encoding Pulito (Senza newlines o spazi spuri)
-        compressed = zlib.compress(clean_code.encode('utf-8'))
-        base64_str = base64.urlsafe_b64encode(compressed).decode('utf-8').replace("\n", "").replace("\r", "").strip()
-        
-        url = f"[https://kroki.io/mermaid/png/](https://kroki.io/mermaid/png/){base64_str}"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        
+        # 3. Encoding URL-Safe Base64 (fondamentale per mermaid.ink)
+        graph_bytes = clean_code.encode("utf-8")
+        base64_string = base64.urlsafe_b64encode(graph_bytes).decode("utf-8")
+
+        # 4. Richiesta con User-Agent appropriato e parametri di rendering
+        url = f"https://mermaid.ink/img/{base64_string}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+
         response = requests.get(url, headers=headers, timeout=10)
-        
-        if response.status_code == 200 and len(response.content) > 200:
-            st.success(f"✅ Diagramma '{diag_title}': Convertito in PNG con successo!")
+
+        # mermaid.ink restituisce un PNG valido sopra i 100 byte
+        if response.status_code == 200 and len(response.content) > 100:
             return response.content
         else:
-            # Fallback su Mermaid.ink (Pulendo anch'esso la stringa)
-            st.info(f"🔄 Kroki fallito per '{diag_title}'. Tentativo su Mermaid.ink...")
-            base64_m = base64.urlsafe_b64encode(clean_code.encode('utf-8')).decode('utf-8').rstrip('=').replace("\n", "").replace("\r", "").strip()
-            
-            url_mermaid = f"[https://mermaid.ink/img/](https://mermaid.ink/img/){base64_m}"
-            res2 = requests.get(url_mermaid, headers=headers, timeout=10)
-            
-            if res2.status_code == 200 and len(res2.content) > 200:
-                st.success(f"✅ Diagramma '{diag_title}': Convertito con Mermaid.ink!")
-                return res2.content
-            else:
-                st.error(f"❌ Errore Rendering '{diag_title}': Sintassi Mermaid non valida (HTTP {res2.status_code}).")
-            
+            print(
+                f"[Mermaid Render Error] HTTP {response.status_code}: {response.text[:200]}"
+            )
+
     except Exception as e:
-        st.error(f"💥 Eccezione durante il rendering di '{diag_title}': {str(e)}")
-        
+        print(f"[Mermaid Exception] {str(e)}")
+
     return None
 
 # =============================================================================

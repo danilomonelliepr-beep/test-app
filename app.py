@@ -15,6 +15,8 @@ from anthropic import Anthropic
 from google import genai
 from google.genai import types
 
+from exporter import generate_pdf_report, generate_docx_report
+
 # =============================================================================
 # 1. PAGE CONFIGURATION
 # =============================================================================
@@ -682,10 +684,54 @@ with tabs[5]:
 with tabs[6]:
     st.json(metadata, expanded=False)
 
-with tabs[7]:
-    st.markdown("#### Export SME-Reviewed Knowledge Base")
-    package = {
-        "metadata": {"provider": st.session_state.get("analysis_provider"), "file_count": metadata["file_count"]},
-        "reviewed_knowledge": result
-    }
-    st.download_button("📥 Download JSON Base", json.dumps(package, indent=2).encode("utf-8"), "knowledge.json", "application/json", type="primary")
+with tabs[7]:  # Downloads Tab
+    st.markdown("### 📥 Export Validated Knowledge Artifacts")
+    st.write(
+        "Generate and download the complete technical documentation including "
+        "all SME-validated business rules, technical risks, and architectural metadata."
+    )
+    
+    col_pdf, col_docx, col_json = st.columns(3)
+    
+    # 1. PDF Report Download Button
+    with col_pdf:
+        pdf_bytes = generate_pdf_report(
+            analysis_result=st.session_state["analysis_result"],
+            metadata=st.session_state["analysis_metadata"],
+            provider=st.session_state.get("analysis_provider", "AI Provider"),
+            model_name=st.session_state.get("analysis_model", "Default Model")
+        )
+        st.download_button(
+            label="📄 Export PDF Report",
+            data=pdf_bytes,
+            file_name="Legacy_Application_Documentation.pdf",
+            mime="application/pdf",
+            use_container_width=True
+        )
+        
+    # 2. Word (.docx) Download Button
+    with col_docx:
+        docx_bytes = generate_docx_report(
+            analysis_result=st.session_state["analysis_result"],
+            metadata=st.session_state["analysis_metadata"],
+            provider=st.session_state.get("analysis_provider", "AI Provider"),
+            model_name=st.session_state.get("analysis_model", "Default Model")
+        )
+        st.download_button(
+            label="📝 Export Word (.docx)",
+            data=docx_bytes,
+            file_name="Legacy_Application_Documentation.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            use_container_width=True
+        )
+        
+    # 3. Raw JSON Export Button
+    with col_json:
+        json_bytes = json.dumps(st.session_state["analysis_result"], indent=2).encode("utf-8")
+        st.download_button(
+            label="📦 Export JSON Data",
+            data=json_bytes,
+            file_name="Legacy_Application_Analysis.json",
+            mime="application/json",
+            use_container_width=True
+        )

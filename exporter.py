@@ -46,7 +46,7 @@ def get_mermaid_image_bytes(mermaid_code: str, diag_title: str = "Diagram") -> O
                 lines = lines[:-1]
             clean_code = "\n".join(lines).strip()
 
-        # 2. Estrae solo la parte valida di Mermaid (evita testo spazzatura prima o dopo)
+        # 2. Estrae solo la parte valida di Mermaid
         match = re.search(r'(graph|flowchart|sequenceDiagram|erDiagram|classDiagram|gantt)[\s\S]*', clean_code)
         if match:
             clean_code = match.group(0)
@@ -55,28 +55,31 @@ def get_mermaid_image_bytes(mermaid_code: str, diag_title: str = "Diagram") -> O
         if not clean_code:
             return None
 
-        # 3. Chiamata a Kroki.io via Deflate Compression (più stabile di mermaid.ink)
+        # 3. Compressione e Encoding Pulito (Senza newlines o spazi spuri)
         compressed = zlib.compress(clean_code.encode('utf-8'))
-        base64_str = base64.urlsafe_b64encode(compressed).decode('utf-8')
+        base64_str = base64.urlsafe_b64encode(compressed).decode('utf-8').replace("\n", "").replace("\r", "").strip()
         
         url = f"[https://kroki.io/mermaid/png/](https://kroki.io/mermaid/png/){base64_str}"
         headers = {'User-Agent': 'Mozilla/5.0'}
+        
         response = requests.get(url, headers=headers, timeout=10)
         
         if response.status_code == 200 and len(response.content) > 200:
             st.success(f"✅ Diagramma '{diag_title}': Convertito in PNG con successo!")
             return response.content
         else:
-            # Secondo tentativo di Fallback su Mermaid.ink
-            st.info(f"🔄 Kroki fallito ({response.status_code}) per '{diag_title}'. Tentativo su Mermaid.ink...")
-            base64_m = base64.urlsafe_b64encode(clean_code.encode('utf-8')).decode('utf-8').rstrip('=')
-            res2 = requests.get(f"[https://mermaid.ink/img/](https://mermaid.ink/img/){base64_m}", headers=headers, timeout=10)
+            # Fallback su Mermaid.ink (Pulendo anch'esso la stringa)
+            st.info(f"🔄 Kroki fallito per '{diag_title}'. Tentativo su Mermaid.ink...")
+            base64_m = base64.urlsafe_b64encode(clean_code.encode('utf-8')).decode('utf-8').rstrip('=').replace("\n", "").replace("\r", "").strip()
+            
+            url_mermaid = f"[https://mermaid.ink/img/](https://mermaid.ink/img/){base64_m}"
+            res2 = requests.get(url_mermaid, headers=headers, timeout=10)
             
             if res2.status_code == 200 and len(res2.content) > 200:
                 st.success(f"✅ Diagramma '{diag_title}': Convertito con Mermaid.ink!")
                 return res2.content
             else:
-                st.error(f"❌ Errore Rendering '{diag_title}': Sintassi Mermaid non valida o rifiutata dal server (HTTP {res2.status_code}).")
+                st.error(f"❌ Errore Rendering '{diag_title}': Sintassi Mermaid non valida (HTTP {res2.status_code}).")
             
     except Exception as e:
         st.error(f"💥 Eccezione durante il rendering di '{diag_title}': {str(e)}")

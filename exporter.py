@@ -5,10 +5,10 @@ import requests
 from typing import Dict, Any, List, Optional
 
 # ReportLab (PDF Engine)
-from reportlab.lib.pagesizes import A4
+from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib import colors
 from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak, KeepTogether
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak
 )
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
@@ -16,6 +16,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 import docx
 from docx import Document
 from docx.shared import Inches, Pt, RGBColor
+from docx.enum.section import WD_SECTION_START, WD_ORIENTATION
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.oxml import parse_xml
@@ -26,7 +27,6 @@ from docx.oxml.ns import nsdecls
 # HELPER: CONVERSIONE MERMAID IN IMMAGINE PNG VIA MERMAID.INK
 # =============================================================================
 def get_mermaid_image_bytes(mermaid_code: str) -> Optional[bytes]:
-    """Converte codice Mermaid in immagine PNG usando il servizio gratuito mermaid.ink."""
     if not mermaid_code or not str(mermaid_code).strip():
         return None
     try:
@@ -52,7 +52,7 @@ def set_cell_background(cell, hex_color: str):
     shd = parse_xml(f'<w:shd {nsdecls("w")} w:fill="{hex_color}"/>')
     tcPr.append(shd)
 
-def set_cell_margins(cell, top=100, bottom=100, left=120, right=120):
+def set_cell_margins(cell, top=80, bottom=80, left=100, right=100):
     tcPr = cell._element.get_or_add_tcPr()
     tcMar = parse_xml(
         f'<w:tcMar {nsdecls("w")}>'
@@ -64,46 +64,18 @@ def set_cell_margins(cell, top=100, bottom=100, left=120, right=120):
     )
     tcPr.append(tcMar)
 
-def add_docx_callout(doc: Document, title: str, text: str):
-    table = doc.add_table(rows=1, cols=1)
-    table.alignment = WD_TABLE_ALIGNMENT.CENTER
-    cell = table.cell(0, 0)
-    cell.width = Inches(6.5)
-    set_cell_background(cell, "F7FAFC")
-    set_cell_margins(cell, top=140, bottom=140, left=180, right=180)
-    
-    tcPr = cell._element.get_or_add_tcPr()
-    borders = parse_xml(
-        f'<w:tcBorders {nsdecls("w")}>'
-        f'<w:left w:val="single" w:sz="24" w:space="0" w:color="1A365D"/>'
-        f'<w:top w:val="none"/><w:right w:val="none"/><w:bottom w:val="none"/>'
-        f'</w:tcBorders>'
-    )
-    tcPr.append(borders)
-    
-    p = cell.paragraphs[0]
-    p.paragraph_format.space_before = Pt(0)
-    p.paragraph_format.space_after = Pt(2)
-    
-    r_title = p.add_run(f"{title}\n")
-    r_title.bold = True
-    r_title.font.size = Pt(9.5)
-    r_title.font.color.rgb = RGBColor(26, 54, 93)
-    
-    r_text = p.add_run(text if text else "N/A")
-    r_text.font.size = Pt(9)
-    r_text.font.color.rgb = RGBColor(45, 55, 72)
-    doc.add_paragraph()
-
 
 # =============================================================================
-# 1. GENERATORE REPORT PDF (REPORTLAB)
+# 1. GENERATORE REPORT PDF (LANDSCAPE / ORIZZONTALE)
 # =============================================================================
 def generate_pdf_report(analysis_result: Dict[str, Any], metadata: Dict[str, Any], provider: str, model_name: str) -> bytes:
     buffer = io.BytesIO()
+    
+    # IMPOSTAZIONE PAGINA IN ORIZZONTALE (LANDSCAPE)
+    # Larghezza totale: 841.89 pt | Area utile di stampa: 781.89 pt
     doc = SimpleDocTemplate(
         buffer,
-        pagesize=A4,
+        pagesize=landscape(A4),
         rightMargin=30,
         leftMargin=30,
         topMargin=30,
@@ -116,10 +88,10 @@ def generate_pdf_report(analysis_result: Dict[str, Any], metadata: Dict[str, Any
         'DocTitle', parent=styles['Heading1'], fontName='Helvetica-Bold', fontSize=18, leading=22, textColor=colors.HexColor('#1A365D'), spaceAfter=4
     )
     sub_style = ParagraphStyle(
-        'DocSub', parent=styles['Normal'], fontName='Helvetica', fontSize=8.5, leading=11, textColor=colors.HexColor('#718096'), spaceAfter=12
+        'DocSub', parent=styles['Normal'], fontName='Helvetica', fontSize=8.5, leading=11, textColor=colors.HexColor('#718096'), spaceAfter=10
     )
     h2_style = ParagraphStyle(
-        'SectionHeader', parent=styles['Heading2'], fontName='Helvetica-Bold', fontSize=11, leading=14, textColor=colors.HexColor('#1A365D'), spaceBefore=12, spaceAfter=6, keepWithNext=True
+        'SectionHeader', parent=styles['Heading2'], fontName='Helvetica-Bold', fontSize=11, leading=14, textColor=colors.HexColor('#1A365D'), spaceBefore=10, spaceAfter=6, keepWithNext=True
     )
     body_style = ParagraphStyle(
         'BodyTextCustom', parent=styles['Normal'], fontName='Helvetica', fontSize=8, leading=11, textColor=colors.HexColor('#2D3748'), spaceAfter=6
@@ -150,7 +122,7 @@ def generate_pdf_report(analysis_result: Dict[str, Any], metadata: Dict[str, Any
             Paragraph(f"<b>{len(analysis_result.get('technical_risks', []))}</b><br/><font size=5.5 color='#718096'>RISKS</font>", cell_style)
         ]
     ]
-    t_metrics = Table(metric_data, colWidths=[107, 107, 107, 107, 107])
+    t_metrics = Table(metric_data, colWidths=[156, 156, 156, 156, 156])
     t_metrics.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#F7FAFC')),
         ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
@@ -161,17 +133,21 @@ def generate_pdf_report(analysis_result: Dict[str, Any], metadata: Dict[str, Any
         ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
     ]))
     story.append(t_metrics)
-    story.append(Spacer(1, 10))
+    story.append(Spacer(1, 8))
 
-    # --- TAB 1: OVERVIEW ---
+    # --- OVERVIEW ---
     story.append(Paragraph("1. Executive Summary & Purpose", h2_style))
-    story.append(Paragraph(f"<b>Executive Summary:</b> {html.escape(analysis_result.get('executive_summary', 'N/A'))}", body_style))
-    story.append(Paragraph(f"<b>Application Purpose:</b> {html.escape(analysis_result.get('application_purpose', 'N/A'))}", body_style))
+    story.append(Paragraph(f"<b>Executive Summary:</b> {html.escape(str(analysis_result.get('executive_summary', 'N/A')))}", body_style))
+    story.append(Paragraph(f"<b>Application Purpose:</b> {html.escape(str(analysis_result.get('application_purpose', 'N/A')))}", body_style))
     if analysis_result.get('technical_notes'):
-        story.append(Paragraph(f"<b>Technical Notes:</b> {html.escape(analysis_result.get('technical_notes'))}", body_style))
+        story.append(Paragraph(f"<b>Technical Notes:</b> {html.escape(str(analysis_result.get('technical_notes')))}", body_style))
 
-    # Helper Generico per Tabelle Dinamiche
-    def build_pdf_table(headers: List[str], data: List[Dict[str, Any]], keys: List[str], col_widths: List[int]):
+    # Helper per costruire tabelle PDF dinamiche
+    def build_pdf_table(data: List[Dict[str, Any]], columns_config: List[tuple], total_width: int = 780):
+        headers = [c[0] for c in columns_config]
+        keys = [c[1] for c in columns_config]
+        widths = [c[2] for c in columns_config]
+        
         table_rows = [[Paragraph(f"<b>{h}</b>", header_cell_style) for h in headers]]
         
         if not data:
@@ -182,20 +158,20 @@ def generate_pdf_report(analysis_result: Dict[str, Any], metadata: Dict[str, Any
                 if not isinstance(item, dict):
                     continue
                 row_cells = []
-                sme_approved = item.get("sme_approved", False)
-                status_str = "<font color='#22543D'><b>APPROVED</b></font>" if sme_approved else "<font color='#744210'><b>PENDING</b></font>"
-                row_cells.append(Paragraph(status_str, cell_style))
-                
-                for key in keys[1:]:
-                    val = html.escape(str(item.get(key, "-")))
-                    if key == "severity":
-                        sev = val.upper()
-                        c = {"CRITICAL": "#742A2A", "HIGH": "#744210", "MEDIUM": "#2D3748", "LOW": "#234E52"}.get(sev, "#2D3748")
-                        val = f"<font color='{c}'><b>{sev}</b></font>"
-                    row_cells.append(Paragraph(val, cell_style))
+                for key in keys:
+                    if key == "sme_approved":
+                        val_bool = item.get("sme_approved", False)
+                        val_str = "<font color='#22543D'><b>APPROVED</b></font>" if val_bool else "<font color='#744210'><b>PENDING</b></font>"
+                    else:
+                        val_str = html.escape(str(item.get(key, "-")))
+                        if key == "severity":
+                            sev = val_str.upper()
+                            c = {"CRITICAL": "#742A2A", "HIGH": "#744210", "MEDIUM": "#2D3748", "LOW": "#234E52"}.get(sev, "#2D3748")
+                            val_str = f"<font color='{c}'><b>{sev}</b></font>"
+                    row_cells.append(Paragraph(val_str, cell_style))
                 table_rows.append(row_cells)
 
-        t = Table(table_rows, colWidths=col_widths)
+        t = Table(table_rows, colWidths=widths)
         t.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2D3748')),
             ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
@@ -209,102 +185,75 @@ def generate_pdf_report(analysis_result: Dict[str, Any], metadata: Dict[str, Any
         ]))
         return t
 
-    # --- TAB 2: BUSINESS LOGIC ---
+    # --- BUSINESS LOGIC ---
     story.append(Paragraph("2. Business Logic", h2_style))
     story.append(Paragraph("<b>Business Processes:</b>", body_style))
     story.append(build_pdf_table(
-        ["Status", "ID", "Process Name", "Description", "Trigger", "Outcome"],
         analysis_result.get("business_processes", []),
-        ["sme_approved", "process_id", "process_name", "description", "trigger", "outcome"],
-        [45, 45, 90, 165, 95, 95]
+        [("Status", "sme_approved", 55), ("Process ID", "process_id", 65), ("Process Name", "process_name", 140), ("Description", "description", 240), ("Trigger", "trigger", 140), ("Outcome", "outcome", 140)]
     ))
     story.append(Spacer(1, 6))
     story.append(Paragraph("<b>Business Rules:</b>", body_style))
     story.append(build_pdf_table(
-        ["Status", "Rule ID", "Rule Name", "Condition", "Action", "Business Impact"],
         analysis_result.get("business_rules", []),
-        ["sme_approved", "rule_id", "rule_name", "condition", "action", "business_impact"],
-        [45, 45, 90, 120, 120, 115]
+        [("Status", "sme_approved", 55), ("Rule ID", "rule_id", 65), ("Rule Name", "rule_name", 140), ("Condition", "condition", 180), ("Action", "action", 170), ("Business Impact", "business_impact", 170)]
     ))
 
-    # --- TAB 3: ARCHITECTURE ---
+    # --- ARCHITECTURE ---
     story.append(Paragraph("3. System Architecture", h2_style))
     story.append(Paragraph("<b>Components:</b>", body_style))
     story.append(build_pdf_table(
-        ["Status", "Component Name", "Type", "Source File"],
         analysis_result.get("components", []),
-        ["sme_approved", "component_name", "component_type", "source_file"],
-        [50, 180, 120, 185]
+        [("Status", "sme_approved", 60), ("Component Name", "component_name", 220), ("Type", "component_type", 180), ("Source File", "source_file", 320)]
     ))
     story.append(Spacer(1, 6))
     story.append(Paragraph("<b>Dependencies:</b>", body_style))
     story.append(build_pdf_table(
-        ["Status", "Source Component", "Target Entity", "Type", "Confidence"],
         analysis_result.get("dependencies", []),
-        ["sme_approved", "source", "target", "dependency_type", "confidence"],
-        [50, 150, 150, 110, 75]
+        [("Status", "sme_approved", 60), ("Source Component", "source", 220), ("Target Entity", "target", 220), ("Type", "dependency_type", 180), ("Confidence", "confidence", 100)]
     ))
     story.append(Spacer(1, 6))
     story.append(Paragraph("<b>Interfaces:</b>", body_style))
     story.append(build_pdf_table(
-        ["Status", "Interface Name", "Type", "Technology", "Source File"],
         analysis_result.get("interfaces", []),
-        ["sme_approved", "name", "interface_type", "technology", "source_file"],
-        [50, 150, 110, 95, 130]
+        [("Status", "sme_approved", 60), ("Interface Name", "name", 200), ("Type", "interface_type", 140), ("Technology", "technology", 140), ("Source File", "source_file", 240)]
+    ))
+    story.append(Spacer(1, 6))
+    story.append(Paragraph("<b>Application Mapping:</b>", body_style))
+    story.append(build_pdf_table(
+        analysis_result.get("application_mapping", []),
+        [("Status", "sme_approved", 60), ("Source Module", "source_module", 200), ("Target Module", "target_module", 200), ("Mapping Type", "mapping_type", 140), ("Notes", "notes", 180)]
     ))
 
-    # --- TAB 4: DATA FLOWS ---
+    # --- DATA FLOWS ---
     story.append(Paragraph("4. Data Objects & Data Flows", h2_style))
     story.append(Paragraph("<b>Data Objects:</b>", body_style))
     story.append(build_pdf_table(
-        ["Status", "Object Name", "Type", "Operation", "Source File"],
         analysis_result.get("data_objects", []),
-        ["sme_approved", "object_name", "object_type", "operation", "source_file"],
-        [50, 150, 110, 85, 140]
+        [("Status", "sme_approved", 60), ("Object Name", "object_name", 200), ("Type", "object_type", 140), ("Operation", "operation", 140), ("Source File", "source_file", 240)]
     ))
     story.append(Spacer(1, 6))
     story.append(Paragraph("<b>Data Flows:</b>", body_style))
     story.append(build_pdf_table(
-        ["Status", "Flow Name", "From Component", "To Component", "Data Transferred"],
         analysis_result.get("data_flows", []),
-        ["sme_approved", "flow_name", "source_component", "target_component", "data_description"],
-        [50, 110, 125, 125, 125]
+        [("Status", "sme_approved", 60), ("Flow Name", "flow_name", 160), ("From Component", "source_component", 180), ("To Component", "target_component", 180), ("Data Transferred", "data_description", 200)]
     ))
 
-    # --- TAB 5: RISKS & IMPACT ---
-    story.append(Paragraph("5. Risks, Impact & Assumptions", h2_style))
+    # --- RISKS & IMPACT ---
+    story.append(Paragraph("5. Technical Risks & Impact Analysis", h2_style))
     story.append(Paragraph("<b>Technical Risks:</b>", body_style))
     story.append(build_pdf_table(
-        ["Status", "Risk ID", "Severity", "Risk Type", "Affected Component", "Recommendation"],
         analysis_result.get("technical_risks", []),
-        ["sme_approved", "risk_id", "severity", "risk_type", "affected_component", "recommendation"],
-        [45, 45, 50, 105, 115, 175]
+        [("Status", "sme_approved", 55), ("Risk ID", "risk_id", 60), ("Severity", "severity", 65), ("Risk Type", "risk_type", 150), ("Affected Component", "affected_component", 180), ("Recommendation", "recommendation", 270)]
     ))
     story.append(Spacer(1, 6))
     story.append(Paragraph("<b>Impact Analysis:</b>", body_style))
     story.append(build_pdf_table(
-        ["Status", "Target Component", "Impact Level", "Description", "Mitigation"],
         analysis_result.get("impact_analysis", []),
-        ["sme_approved", "component", "impact_level", "description", "mitigation"],
-        [50, 125, 65, 155, 140]
+        [("Status", "sme_approved", 60), ("Target Component", "component", 180), ("Impact Level", "impact_level", 90), ("Description", "description", 240), ("Mitigation Strategy", "mitigation", 210)]
     ))
-    
-    # Questions & Assumptions
-    val_q = analysis_result.get("validation_questions", [])
-    if val_q:
-        story.append(Spacer(1, 4))
-        story.append(Paragraph("<b>Open Validation Questions for SME:</b>", body_style))
-        for q in val_q:
-            story.append(Paragraph(f"• {html.escape(str(q))}", body_style))
 
-    assump = analysis_result.get("assumptions", [])
-    if assump:
-        story.append(Spacer(1, 4))
-        story.append(Paragraph("<b>AI Analysis Assumptions:</b>", body_style))
-        for a in assump:
-            story.append(Paragraph(f"• {html.escape(str(a))}", body_style))
-
-    # --- TAB 6: DIAGRAMS (CONVERTITI IN PNG) ---
+    # --- DIAGRAMS ---
     story.append(PageBreak())
     story.append(Paragraph("6. Architecture & Process Diagrams", h2_style))
     
@@ -321,65 +270,78 @@ def generate_pdf_report(analysis_result: Dict[str, Any], metadata: Dict[str, Any
             img_bytes = get_mermaid_image_bytes(diag_code)
             if img_bytes:
                 img_buf = io.BytesIO(img_bytes)
-                story.append(Image(img_buf, width=470, height=220))
+                story.append(Image(img_buf, width=720, height=260))
             else:
                 story.append(Paragraph(f"<font fontName='Courier' size=6.5>{html.escape(str(diag_code))}</font>", body_style))
             story.append(Spacer(1, 10))
 
-    # --- TAB 7: STATIC EVIDENCE ---
+    # --- STATIC EVIDENCE ---
     story.append(Paragraph("7. Static Code Evidence", h2_style))
     sql_tables = metadata.get("detected_tables", [])
     if sql_tables:
-        story.append(Paragraph(f"<b>SQL Tables Extracted via Static Analysis:</b> {html.escape(', '.join(sql_tables))}", body_style))
+        story.append(Paragraph(f"<b>SQL Tables Extracted:</b> {html.escape(', '.join(sql_tables))}", body_style))
 
     files_list = metadata.get("files", [])
     if files_list:
         file_summary = ", ".join([f"{f.get('filename')} ({f.get('line_count')} LOC)" for f in files_list])
-        story.append(Paragraph(f"<b>Source Code Files Breakdown:</b> {html.escape(file_summary)}", body_style))
+        story.append(Paragraph(f"<b>Files Breakdown:</b> {html.escape(file_summary)}", body_style))
 
     doc.build(story)
     return buffer.getvalue()
 
 
 # =============================================================================
-# 2. GENERATORE REPORT WORD (.DOCX)
+# 2. GENERATORE REPORT WORD (.DOCX) - IN ORIZZONTALE (LANDSCAPE)
 # =============================================================================
 def generate_docx_report(analysis_result: Dict[str, Any], metadata: Dict[str, Any], provider: str, model_name: str) -> bytes:
     doc = Document()
     
-    for section in doc.sections:
-        section.top_margin = Inches(0.7)
-        section.bottom_margin = Inches(0.7)
-        section.left_margin = Inches(0.7)
-        section.right_margin = Inches(0.7)
+    # Impostazione Orientamento Landscape in Word
+    section = doc.sections[0]
+    section.orientation = WD_ORIENTATION.LANDSCAPE
+    section.page_width = Inches(11.69)
+    section.page_height = Inches(8.27)
+    section.top_margin = Inches(0.6)
+    section.bottom_margin = Inches(0.6)
+    section.left_margin = Inches(0.6)
+    section.right_margin = Inches(0.6)
         
     style = doc.styles['Normal']
     font = style.font
     font.name = 'Arial'
-    font.size = Pt(9)
+    font.size = Pt(8.5)
     font.color.rgb = RGBColor(45, 55, 72)
 
-    # Header
+    # Header Documento
     title_p = doc.add_paragraph()
     r_title = title_p.add_run("Legacy Application Knowledge Extraction")
     r_title.bold = True
-    r_title.font.size = Pt(18)
+    r_title.font.size = Pt(16)
     r_title.font.color.rgb = RGBColor(26, 54, 93)
     
     sub_p = doc.add_paragraph()
-    sub_p.paragraph_format.space_after = Pt(10)
+    sub_p.paragraph_format.space_after = Pt(8)
     r_sub = sub_p.add_run(f"Reverse Engineering Complete Report | Provider: {provider} ({model_name}) | Files: {metadata.get('file_count', 0)}")
-    r_sub.font.size = Pt(8.5)
+    r_sub.font.size = Pt(8)
     r_sub.font.color.rgb = RGBColor(113, 128, 150)
 
     # 1. Overview
     h1 = doc.add_heading(level=1)
     h1.add_run("1. Executive Summary & Application Purpose").font.color.rgb = RGBColor(26, 54, 93)
-    add_docx_callout(doc, "Executive Summary", analysis_result.get("executive_summary", "N/A"))
-    add_docx_callout(doc, "Application Purpose", analysis_result.get("application_purpose", "N/A"))
+    
+    p_exec = doc.add_paragraph()
+    p_exec.add_run("Executive Summary: ").bold = True
+    p_exec.add_run(str(analysis_result.get("executive_summary", "N/A")))
+    
+    p_purp = doc.add_paragraph()
+    p_purp.add_run("Application Purpose: ").bold = True
+    p_purp.add_run(str(analysis_result.get("application_purpose", "N/A")))
 
-    # Helper Tabelle Word
-    def create_docx_table(headers: List[str], data: List[Dict[str, Any]], keys: List[str]):
+    # Helper Tabelle Word dinamiche
+    def create_docx_table(data: List[Dict[str, Any]], columns_config: List[tuple]):
+        headers = [c[0] for c in columns_config]
+        keys = [c[1] for c in columns_config]
+        
         table = doc.add_table(rows=1, cols=len(headers))
         table.alignment = WD_TABLE_ALIGNMENT.CENTER
         table.autofit = True
@@ -388,7 +350,7 @@ def generate_docx_report(analysis_result: Dict[str, Any], metadata: Dict[str, An
         for i, h_text in enumerate(headers):
             hdr_cells[i].text = h_text
             set_cell_background(hdr_cells[i], "2D3748")
-            set_cell_margins(hdr_cells[i], top=80, bottom=80, left=100, right=100)
+            set_cell_margins(hdr_cells[i], top=60, bottom=60, left=80, right=80)
             p = hdr_cells[i].paragraphs[0]
             for run in p.runs:
                 run.font.bold = True
@@ -404,21 +366,23 @@ def generate_docx_report(analysis_result: Dict[str, Any], metadata: Dict[str, An
             if not isinstance(item, dict):
                 continue
             row_cells = table.add_row().cells
-            sme = "Approved" if item.get("sme_approved", False) else "Pending"
-            row_values = [sme] + [str(item.get(k, "-")) for k in keys[1:]]
-            
-            for i, val in enumerate(row_values):
+            for i, key in enumerate(keys):
+                if key == "sme_approved":
+                    val = "Approved" if item.get("sme_approved", False) else "Pending"
+                else:
+                    val = str(item.get(key, "-"))
+                
                 row_cells[i].text = val
-                set_cell_margins(row_cells[i], top=60, bottom=60, left=80, right=80)
+                set_cell_margins(row_cells[i], top=50, bottom=50, left=60, right=60)
                 p = row_cells[i].paragraphs[0]
                 p.paragraph_format.space_after = Pt(0)
                 p.paragraph_format.space_before = Pt(0)
                 
                 for run in p.runs:
                     run.font.size = Pt(7.5)
-                    if i == 0:
+                    if key == "sme_approved":
                         run.font.bold = True
-                        run.font.color.rgb = RGBColor(34, 84, 61) if sme == "Approved" else RGBColor(116, 66, 16)
+                        run.font.color.rgb = RGBColor(34, 84, 61) if val == "Approved" else RGBColor(116, 66, 16)
         doc.add_paragraph()
 
     # 2. Business Logic
@@ -426,29 +390,37 @@ def generate_docx_report(analysis_result: Dict[str, Any], metadata: Dict[str, An
     h2.add_run("2. Business Logic").font.color.rgb = RGBColor(26, 54, 93)
     doc.add_paragraph("Business Processes:").runs[0].bold = True
     create_docx_table(
-        ["Status", "ID", "Process Name", "Description", "Trigger", "Outcome"],
         analysis_result.get("business_processes", []),
-        ["sme_approved", "process_id", "process_name", "description", "trigger", "outcome"]
+        [("Status", "sme_approved"), ("Process ID", "process_id"), ("Process Name", "process_name"), ("Description", "description"), ("Trigger", "trigger"), ("Outcome", "outcome")]
     )
     doc.add_paragraph("Business Rules:").runs[0].bold = True
     create_docx_table(
-        ["Status", "Rule ID", "Rule Name", "Condition", "Action", "Business Impact"],
         analysis_result.get("business_rules", []),
-        ["sme_approved", "rule_id", "rule_name", "condition", "action", "business_impact"]
+        [("Status", "sme_approved"), ("Rule ID", "rule_id"), ("Rule Name", "rule_name"), ("Condition", "condition"), ("Action", "action"), ("Business Impact", "business_impact")]
     )
 
     # 3. Architecture
     h3 = doc.add_heading(level=1)
     h3.add_run("3. System Architecture").font.color.rgb = RGBColor(26, 54, 93)
+    doc.add_paragraph("Components:").runs[0].bold = True
     create_docx_table(
-        ["Status", "Component Name", "Type", "Source File"],
         analysis_result.get("components", []),
-        ["sme_approved", "component_name", "component_type", "source_file"]
+        [("Status", "sme_approved"), ("Component Name", "component_name"), ("Type", "component_type"), ("Source File", "source_file")]
     )
+    doc.add_paragraph("Dependencies:").runs[0].bold = True
     create_docx_table(
-        ["Status", "Source Component", "Target Entity", "Type", "Confidence"],
         analysis_result.get("dependencies", []),
-        ["sme_approved", "source", "target", "dependency_type", "confidence"]
+        [("Status", "sme_approved"), ("Source Component", "source"), ("Target Entity", "target"), ("Type", "dependency_type"), ("Confidence", "confidence")]
+    )
+    doc.add_paragraph("Interfaces:").runs[0].bold = True
+    create_docx_table(
+        analysis_result.get("interfaces", []),
+        [("Status", "sme_approved"), ("Interface Name", "name"), ("Type", "interface_type"), ("Technology", "technology"), ("Source File", "source_file")]
+    )
+    doc.add_paragraph("Application Mapping:").runs[0].bold = True
+    create_docx_table(
+        analysis_result.get("application_mapping", []),
+        [("Status", "sme_approved"), ("Source Module", "source_module"), ("Target Module", "target_module"), ("Mapping Type", "mapping_type"), ("Notes", "notes")]
     )
 
     # 4. Data Flows
@@ -456,24 +428,27 @@ def generate_docx_report(analysis_result: Dict[str, Any], metadata: Dict[str, An
     h4.add_run("4. Data Objects & Data Flows").font.color.rgb = RGBColor(26, 54, 93)
     doc.add_paragraph("Data Objects:").runs[0].bold = True
     create_docx_table(
-        ["Status", "Object Name", "Type", "Operation", "Source File"],
         analysis_result.get("data_objects", []),
-        ["sme_approved", "object_name", "object_type", "operation", "source_file"]
+        [("Status", "sme_approved"), ("Object Name", "object_name"), ("Type", "object_type"), ("Operation", "operation"), ("Source File", "source_file")]
     )
     doc.add_paragraph("Data Flows:").runs[0].bold = True
     create_docx_table(
-        ["Status", "Flow Name", "From Component", "To Component", "Data Transferred"],
         analysis_result.get("data_flows", []),
-        ["sme_approved", "flow_name", "source_component", "target_component", "data_description"]
+        [("Status", "sme_approved"), ("Flow Name", "flow_name"), ("From Component", "source_component"), ("To Component", "target_component"), ("Data Transferred", "data_description")]
     )
 
-    # 5. Risks
+    # 5. Risks & Impact
     h5 = doc.add_heading(level=1)
-    h5.add_run("5. Technical Risks & Impact").font.color.rgb = RGBColor(26, 54, 93)
+    h5.add_run("5. Technical Risks & Impact Analysis").font.color.rgb = RGBColor(26, 54, 93)
+    doc.add_paragraph("Technical Risks:").runs[0].bold = True
     create_docx_table(
-        ["Status", "Risk ID", "Severity", "Risk Type", "Affected Component", "Recommendation"],
         analysis_result.get("technical_risks", []),
-        ["sme_approved", "risk_id", "severity", "risk_type", "affected_component", "recommendation"]
+        [("Status", "sme_approved"), ("Risk ID", "risk_id"), ("Severity", "severity"), ("Risk Type", "risk_type"), ("Affected Component", "affected_component"), ("Recommendation", "recommendation")]
+    )
+    doc.add_paragraph("Impact Analysis:").runs[0].bold = True
+    create_docx_table(
+        analysis_result.get("impact_analysis", []),
+        [("Status", "sme_approved"), ("Target Component", "component"), ("Impact Level", "impact_level"), ("Description", "description"), ("Mitigation Strategy", "mitigation")]
     )
 
     # 6. Diagrams
@@ -491,11 +466,11 @@ def generate_docx_report(analysis_result: Dict[str, Any], metadata: Dict[str, An
             img_bytes = get_mermaid_image_bytes(diag_code)
             if img_bytes:
                 img_buf = io.BytesIO(img_bytes)
-                doc.add_picture(img_buf, width=Inches(6.0))
+                doc.add_picture(img_buf, width=Inches(9.5))
             else:
                 p_code = doc.add_paragraph(str(diag_code))
                 p_code.style.font.name = 'Courier New'
-                p_code.style.font.size = Pt(7.5)
+                p_code.style.font.size = Pt(7)
 
     buffer = io.BytesIO()
     doc.save(buffer)

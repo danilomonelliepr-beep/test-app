@@ -657,32 +657,39 @@ with tabs[0]:
     st.write("**Notes:**", result.get("technical_notes") or "N/A")
 
 with tabs[1]:
-    result["business_processes"] = render_dataframe_section("Business Processes", result["business_processes"], "None", "bp_edit")
-    result["business_rules"] = render_dataframe_section("Business Rules", result["business_rules"], "None", "br_edit")
+    result["business_processes"] = render_dataframe_section("Business Processes", result.get("business_processes", []), "None", "bp_edit")
+    result["business_rules"] = render_dataframe_section("Business Rules", result.get("business_rules", []), "None", "br_edit")
 
 with tabs[2]:
-    result["components"] = render_dataframe_section("Components", result["components"], "None", "comp_edit")
-    result["dependencies"] = render_dataframe_section("Dependencies", result["dependencies"], "None", "dep_edit")
-    result["interfaces"] = render_dataframe_section("Interfaces", result["interfaces"], "None", "int_edit")
-    result["application_mapping"] = render_dataframe_section("App Mapping", result["application_mapping"], "None", "map_edit")
+    result["components"] = render_dataframe_section("Components", result.get("components", []), "None", "comp_edit")
+    result["dependencies"] = render_dataframe_section("Dependencies", result.get("dependencies", []), "None", "dep_edit")
+    result["interfaces"] = render_dataframe_section("Interfaces", result.get("interfaces", []), "None", "int_edit")
+    result["application_mapping"] = render_dataframe_section("App Mapping", result.get("application_mapping", []), "None", "map_edit")
 
 with tabs[3]:
-    result["data_objects"] = render_dataframe_section("Data Objects", result["data_objects"], "None", "obj_edit")
-    result["data_flows"] = render_dataframe_section("Data Flows", result["data_flows"], "None", "flow_edit")
+    result["data_objects"] = render_dataframe_section("Data Objects", result.get("data_objects", []), "None", "obj_edit")
+    result["data_flows"] = render_dataframe_section("Data Flows", result.get("data_flows", []), "None", "flow_edit")
 
 with tabs[4]:
-    result["technical_risks"] = render_dataframe_section("Technical Risks", result["technical_risks"], "None", "risk_edit")
-    result["impact_analysis"] = render_dataframe_section("Impact Analysis", result["impact_analysis"], "None", "impact_edit")
+    result["technical_risks"] = render_dataframe_section("Technical Risks", result.get("technical_risks", []), "None", "risk_edit")
+    result["impact_analysis"] = render_dataframe_section("Impact Analysis", result.get("impact_analysis", []), "None", "impact_edit")
 
 with tabs[5]:
     dt = st.selectbox("Diagram", ["Process Flow", "App Map", "Data Flow", "Call Graph"])
-    if dt == "Process Flow": render_mermaid_diagram("Process Flow", result["mermaid_process_flow"], "bp.mmd")
-    elif dt == "App Map": render_mermaid_diagram("App Map", result["mermaid_application_map"], "app.mmd")
-    elif dt == "Data Flow": render_mermaid_diagram("Data Flow", result["mermaid_data_flow"], "df.mmd")
-    else: render_mermaid_diagram("Call Graph", result["mermaid_call_graph"], "cg.mmd")
+    if dt == "Process Flow": 
+        render_mermaid_diagram("Process Flow", result.get("mermaid_process_flow"), "bp.mmd")
+    elif dt == "App Map": 
+        render_mermaid_diagram("App Map", result.get("mermaid_application_map"), "app.mmd")
+    elif dt == "Data Flow": 
+        render_mermaid_diagram("Data Flow", result.get("mermaid_data_flow"), "df.mmd")
+    else: 
+        render_mermaid_diagram("Call Graph", result.get("mermaid_call_graph"), "cg.mmd")
 
 with tabs[6]:
     st.json(metadata, expanded=False)
+
+# SALVATAGGIO STATO: Sincronizza le modifiche apportate nelle DataFrames dello SME
+st.session_state["analysis_result"] = result
 
 with tabs[7]:  # Downloads Tab
     st.markdown("### 📥 Export Validated Knowledge Artifacts")
@@ -696,8 +703,8 @@ with tabs[7]:  # Downloads Tab
     # 1. PDF Report Download Button
     with col_pdf:
         pdf_bytes = generate_pdf_report(
-            analysis_result=st.session_state["analysis_result"],
-            metadata=st.session_state["analysis_metadata"],
+            analysis_result=result,  # Passa direttamente il dizionario 'result' aggiornato
+            metadata=metadata,
             provider=st.session_state.get("analysis_provider", "AI Provider"),
             model_name=st.session_state.get("analysis_model", "Default Model")
         )
@@ -712,8 +719,8 @@ with tabs[7]:  # Downloads Tab
     # 2. Word (.docx) Download Button
     with col_docx:
         docx_bytes = generate_docx_report(
-            analysis_result=st.session_state["analysis_result"],
-            metadata=st.session_state["analysis_metadata"],
+            analysis_result=result,  # Passa direttamente il dizionario 'result' aggiornato
+            metadata=metadata,
             provider=st.session_state.get("analysis_provider", "AI Provider"),
             model_name=st.session_state.get("analysis_model", "Default Model")
         )
@@ -727,7 +734,7 @@ with tabs[7]:  # Downloads Tab
         
     # 3. Raw JSON Export Button
     with col_json:
-        json_bytes = json.dumps(st.session_state["analysis_result"], indent=2).encode("utf-8")
+        json_bytes = json.dumps(result, indent=2, ensure_ascii=False).encode("utf-8")
         st.download_button(
             label="📦 Export JSON Data",
             data=json_bytes,

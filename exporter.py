@@ -454,10 +454,17 @@ def generate_docx_report(analysis_result: Dict[str, Any], metadata: Dict[str, An
     # 4. Data Flows
     h4 = doc.add_heading(level=1)
     h4.add_run("4. Data Objects & Data Flows").font.color.rgb = RGBColor(26, 54, 93)
+    doc.add_paragraph("Data Objects:").runs[0].bold = True
     create_docx_table(
         ["Status", "Object Name", "Type", "Operation", "Source File"],
         analysis_result.get("data_objects", []),
         ["sme_approved", "object_name", "object_type", "operation", "source_file"]
+    )
+    doc.add_paragraph("Data Flows:").runs[0].bold = True
+    create_docx_table(
+        ["Status", "Flow Name", "From Component", "To Component", "Data Transferred"],
+        analysis_result.get("data_flows", []),
+        ["sme_approved", "flow_name", "source_component", "target_component", "data_description"]
     )
 
     # 5. Risks

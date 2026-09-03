@@ -4,7 +4,7 @@ import base64
 import requests
 from typing import Dict, Any, List, Optional
 
-# ReportLab (PDF Engine)
+# ReportLab (Engine PDF)
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib import colors
 from reportlab.platypus import (
@@ -12,7 +12,7 @@ from reportlab.platypus import (
 )
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-# Python-Docx (Word Engine)
+# Python-Docx (Engine Word)
 import docx
 from docx import Document
 from docx.shared import Inches, Pt, RGBColor
@@ -23,24 +23,24 @@ from docx.oxml.ns import nsdecls
 
 
 # =============================================================================
-# HELPER: CONVERSIONE MERMAID IN IMMAGINE PNG (CON TIMEOUT E CLEANUP)
+# HELPER: CONVERSIONE MERMAID IN IMMAGINE PNG
 # =============================================================================
 def get_mermaid_image_bytes(mermaid_code: str) -> Optional[bytes]:
+    """Tenta di convertire il codice Mermaid in immagine PNG tramite API mermaid.ink."""
     if not mermaid_code or not str(mermaid_code).strip():
         return None
     try:
         clean_code = str(mermaid_code).strip()
-        # Rimuove blocchi markdown se presenti
-        if clean_code.startswith("```"):
-            lines = clean_code.split("\n")
-            clean_code = "\n".join([l for l in lines if not l.startswith("```")])
+        # Rimuove eventuali marcatori di blocco markdown ```mermaid ... ```
+        lines = [line for line in clean_code.split("\n") if not line.strip().startswith("```")]
+        clean_code = "\n".join(lines).strip()
         
         graph_bytes = clean_code.encode('utf-8')
         base64_bytes = base64.b64encode(graph_bytes)
         base64_string = base64_bytes.decode('utf-8')
         
-        url = f"https://mermaid.ink/img/{base64_string}"
-        response = requests.get(url, timeout=5)
+        url = f"[https://mermaid.ink/img/](https://mermaid.ink/img/){base64_string}"
+        response = requests.get(url, timeout=6)
         if response.status_code == 200 and len(response.content) > 100:
             return response.content
     except Exception:
@@ -49,7 +49,7 @@ def get_mermaid_image_bytes(mermaid_code: str) -> Optional[bytes]:
 
 
 # =============================================================================
-# HELPERS STILE WORD
+# HELPERS PER STILIZZAZIONE DOCX
 # =============================================================================
 def set_cell_background(cell, hex_color: str):
     tcPr = cell._element.get_or_add_tcPr()
@@ -70,11 +70,12 @@ def set_cell_margins(cell, top=60, bottom=60, left=80, right=80):
 
 
 # =============================================================================
-# 1. GENERATORE REPORT PDF (LANDSCAPE + DIAGRAMMI SICURI)
+# 1. GENERATORE REPORT PDF (LANDSCAPE / TUTTE LE COLONNE / DIAGRAMMI ROBUSTI)
 # =============================================================================
 def generate_pdf_report(analysis_result: Dict[str, Any], metadata: Dict[str, Any], provider: str, model_name: str) -> bytes:
     buffer = io.BytesIO()
     
+    # Impostazione della pagina A4 orizzontale (Larghezza utile: ~780pt)
     doc = SimpleDocTemplate(
         buffer,
         pagesize=landscape(A4),
@@ -144,8 +145,10 @@ def generate_pdf_report(analysis_result: Dict[str, Any], metadata: Dict[str, Any
     story.append(Paragraph("1. Executive Summary & Purpose", h2_style))
     story.append(Paragraph(f"<b>Executive Summary:</b> {html.escape(str(analysis_result.get('executive_summary', 'N/A')))}", body_style))
     story.append(Paragraph(f"<b>Application Purpose:</b> {html.escape(str(analysis_result.get('application_purpose', 'N/A')))}", body_style))
+    if analysis_result.get('technical_notes'):
+        story.append(Paragraph(f"<b>Technical Notes:</b> {html.escape(str(analysis_result.get('technical_notes')))}", body_style))
 
-    # HELPER TABELLE DINAMICHE
+    # Helper che rileva ed estrae TUTTE le colonne dinamiche presenti nei dati
     def build_auto_pdf_table(data: List[Dict[str, Any]], total_width: int = 780):
         if not data or not isinstance(data, list):
             t = Table([[Paragraph("<i>No record extracted</i>", cell_style)]], colWidths=[total_width])
@@ -162,6 +165,7 @@ def generate_pdf_report(analysis_result: Dict[str, Any], metadata: Dict[str, Any
         if not keys:
             return Table([[Paragraph("<i>No data available</i>", cell_style)]], colWidths=[total_width])
 
+        # Posiziona sme_approved come prima colonna se visibile
         if "sme_approved" in keys:
             keys.remove("sme_approved")
             keys.insert(0, "sme_approved")
@@ -204,7 +208,7 @@ def generate_pdf_report(analysis_result: Dict[str, Any], metadata: Dict[str, Any
         ]))
         return t
 
-    # --- SEZIONI 2-5 ---
+    # --- TABELLE SEZIONI ---
     story.append(Paragraph("2. Business Logic", h2_style))
     story.append(Paragraph("<b>Business Processes:</b>", body_style))
     story.append(build_auto_pdf_table(analysis_result.get("business_processes", [])))
@@ -239,26 +243,28 @@ def generate_pdf_report(analysis_result: Dict[str, Any], metadata: Dict[str, Any
     story.append(Paragraph("<b>Impact Analysis:</b>", body_style))
     story.append(build_auto_pdf_table(analysis_result.get("impact_analysis", [])))
 
-    # --- DIAGRAMMI (CON RENDERING SICURO E FALLBACK) ---
+    # --- DIAGRAMMI (MAPPATURA MULTI-CHIAVE + FALLBACK) ---
     story.append(PageBreak())
     story.append(Paragraph("6. Architecture & Process Diagrams", h2_style))
     
     diagrams_map = [
-        ("Process Flow Diagram", analysis_result.get("mermaid_process_flow")),
-        ("Application Mapping Diagram", analysis_result.get("mermaid_application_map")),
-        ("Data Flow Diagram", analysis_result.get("mermaid_data_flow")),
-        ("Call Graph Diagram", analysis_result.get("mermaid_call_graph"))
+        ("Process Flow Diagram", analysis_result.get("mermaid_process_flow") or analysis_result.get("process_flow_diagram") or analysis_result.get("process_flow")),
+        ("Application Mapping Diagram", analysis_result.get("mermaid_application_map") or analysis_result.get("application_map_diagram") or analysis_result.get("app_map")),
+        ("Data Flow Diagram", analysis_result.get("mermaid_data_flow") or analysis_result.get("data_flow_diagram") or analysis_result.get("data_flow")),
+        ("Call Graph Diagram", analysis_result.get("mermaid_call_graph") or analysis_result.get("call_graph_diagram") or analysis_result.get("call_graph"))
     ]
 
+    has_diagrams = False
     for diag_title, diag_code in diagrams_map:
-        story.append(Paragraph(f"<b>{diag_title}</b>", body_style))
         if diag_code and str(diag_code).strip():
-            img_bytes = get_mermaid_image_bytes(diag_code)
+            has_diagrams = True
+            story.append(Paragraph(f"<b>{diag_title}</b>", body_style))
+            img_bytes = get_mermaid_image_bytes(str(diag_code))
             if img_bytes:
                 img_buf = io.BytesIO(img_bytes)
                 story.append(Image(img_buf, width=720, height=240))
             else:
-                # Fallback visivo sicuro in caso di mancata rete o timeout API
+                # Rendering fallback del codice sorgente se l'API non è raggiungibile
                 clean_txt = html.escape(str(diag_code).strip()).replace("\n", "<br/>")
                 fallback_table = Table([[Paragraph(f"<b>Mermaid Source Code:</b><br/>{clean_txt}", code_style)]], colWidths=[780])
                 fallback_table.setStyle(TableStyle([
@@ -270,11 +276,13 @@ def generate_pdf_report(analysis_result: Dict[str, Any], metadata: Dict[str, Any
                     ('RIGHTPADDING', (0,0), (-1,-1), 6),
                 ]))
                 story.append(fallback_table)
-        else:
-            story.append(Paragraph("<i>No diagram generated for this section</i>", body_style))
-        story.append(Spacer(1, 12))
+            story.append(Spacer(1, 10))
+
+    if not has_diagrams:
+        story.append(Paragraph("<i>No diagrams available in the analysis result.</i>", body_style))
 
     # --- STATIC EVIDENCE ---
+    story.append(Spacer(1, 10))
     story.append(Paragraph("7. Static Code Evidence", h2_style))
     sql_tables = metadata.get("detected_tables", [])
     if sql_tables:
@@ -285,7 +293,7 @@ def generate_pdf_report(analysis_result: Dict[str, Any], metadata: Dict[str, Any
 
 
 # =============================================================================
-# 2. GENERATORE REPORT WORD (.DOCX CON DIAGRAMMI)
+# 2. GENERATORE REPORT WORD (.DOCX)
 # =============================================================================
 def generate_docx_report(analysis_result: Dict[str, Any], metadata: Dict[str, Any], provider: str, model_name: str) -> bytes:
     doc = Document()
@@ -358,8 +366,8 @@ def generate_docx_report(analysis_result: Dict[str, Any], metadata: Dict[str, An
                     run.font.size = Pt(7)
         doc.add_paragraph()
 
-    # Strutturazione Capitoli
-    doc.add_heading("1. Executive Summary", level=1)
+    # Strutturazione Sezioni Word
+    doc.add_heading("1. Executive Summary & Application Purpose", level=1)
     doc.add_paragraph(str(analysis_result.get("executive_summary", "N/A")))
 
     doc.add_heading("2. Business Logic", level=1)
@@ -393,15 +401,16 @@ def generate_docx_report(analysis_result: Dict[str, Any], metadata: Dict[str, An
     # --- DIAGRAMMI WORD ---
     doc.add_heading("6. Architecture & Process Diagrams", level=1)
     diagrams_map = [
-        ("Process Flow Diagram", analysis_result.get("mermaid_process_flow")),
-        ("Application Mapping Diagram", analysis_result.get("mermaid_application_map")),
-        ("Data Flow Diagram", analysis_result.get("mermaid_data_flow")),
-        ("Call Graph Diagram", analysis_result.get("mermaid_call_graph"))
+        ("Process Flow Diagram", analysis_result.get("mermaid_process_flow") or analysis_result.get("process_flow_diagram") or analysis_result.get("process_flow")),
+        ("Application Mapping Diagram", analysis_result.get("mermaid_application_map") or analysis_result.get("application_map_diagram") or analysis_result.get("app_map")),
+        ("Data Flow Diagram", analysis_result.get("mermaid_data_flow") or analysis_result.get("data_flow_diagram") or analysis_result.get("data_flow")),
+        ("Call Graph Diagram", analysis_result.get("mermaid_call_graph") or analysis_result.get("call_graph_diagram") or analysis_result.get("call_graph"))
     ]
+    
     for diag_title, diag_code in diagrams_map:
         doc.add_paragraph(diag_title).runs[0].bold = True
         if diag_code and str(diag_code).strip():
-            img_bytes = get_mermaid_image_bytes(diag_code)
+            img_bytes = get_mermaid_image_bytes(str(diag_code))
             if img_bytes:
                 img_buf = io.BytesIO(img_bytes)
                 doc.add_picture(img_buf, width=Inches(9.5))
@@ -410,7 +419,7 @@ def generate_docx_report(analysis_result: Dict[str, Any], metadata: Dict[str, An
                 p_code.style.font.name = 'Courier New'
                 p_code.style.font.size = Pt(7)
         else:
-            doc.add_paragraph("No diagram generated for this section")
+            doc.add_paragraph("No diagram available for this section")
 
     buffer = io.BytesIO()
     doc.save(buffer)

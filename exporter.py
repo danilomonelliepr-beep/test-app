@@ -26,25 +26,47 @@ from docx.oxml.ns import nsdecls
 # HELPER: CONVERSIONE MERMAID IN IMMAGINE PNG
 # =============================================================================
 def get_mermaid_image_bytes(mermaid_code: str) -> Optional[bytes]:
-    """Tenta di convertire il codice Mermaid in immagine PNG tramite API mermaid.ink."""
+    """Pulizia avanzata della sintassi Mermaid e rendering tramite mermaid.ink con base64 URL-safe."""
     if not mermaid_code or not str(mermaid_code).strip():
         return None
     try:
         clean_code = str(mermaid_code).strip()
-        # Rimuove eventuali marcatori di blocco markdown ```mermaid ... ```
-        lines = [line for line in clean_code.split("\n") if not line.strip().startswith("```")]
-        clean_code = "\n".join(lines).strip()
         
+        # 1. Rimuove i blocchi di codice Markdown (```mermaid ... ```)
+        if clean_code.startswith("```"):
+            lines = clean_code.splitlines()
+            # Scarta la prima riga se contiene ``` e l'ultima se è ```
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            clean_code = "\n".join(lines).strip()
+
+        # 2. Rimuove eventuali righe vuote iniziali o spazi residui
+        clean_code = clean_code.strip()
+        if not clean_code:
+            return None
+
+        # 3. Encoding URL-Safe per evitare che caratteri come '+', '/' rompano la richiesta HTTP
         graph_bytes = clean_code.encode('utf-8')
-        base64_bytes = base64.b64encode(graph_bytes)
-        base64_string = base64_bytes.decode('utf-8')
+        base64_bytes = base64.urlsafe_b64encode(graph_bytes)
+        base64_string = base64_bytes.decode('utf-8').rstrip('=')
         
+        # 4. Richiesta HTTP con User-Agent standard e timeout esteso a 10s
         url = f"[https://mermaid.ink/img/](https://mermaid.ink/img/){base64_string}"
-        response = requests.get(url, timeout=6)
-        if response.status_code == 200 and len(response.content) > 100:
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        # 5. Verifica che la risposta sia un'immagine PNG/JPEG valida
+        if response.status_code == 200 and len(response.content) > 200:
             return response.content
-    except Exception:
-        pass
+        else:
+            print(f"[Mermaid Render Error] HTTP Status: {response.status_code} | Text: {response.text[:100]}")
+            
+    except Exception as e:
+        print(f"[Mermaid Exception] {str(e)}")
+        
     return None
 
 

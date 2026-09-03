@@ -173,9 +173,10 @@ def generate_pdf_report(analysis_result: Dict[str, Any], metadata: Dict[str, Any
     exec_summary = html.escape(str(analysis_result.get('executive_summary', 'N/A')))
     app_purpose = html.escape(str(analysis_result.get('application_purpose', analysis_result.get('purpose', 'N/A'))))
     app_notes = html.escape(str(analysis_result.get('notes', analysis_result.get('additional_notes', 'N/A'))))
-
+    
     story.append(Paragraph(f"<b>Executive Summary:</b> {exec_summary}", body_style))
     story.append(Paragraph(f"<b>Application Purpose:</b> {app_purpose}", body_style))
+    story.append(Paragraph(f"<b>Notes:</b> {app_notes}", body_style))
     
     # Mostra le Note solo se presenti e diverse da N/A
     if app_notes and app_notes != 'N/A':
@@ -404,10 +405,42 @@ def generate_docx_report(analysis_result: Dict[str, Any], metadata: Dict[str, An
         doc.add_paragraph()
 
     # Strutturazione Sezioni Word
-    doc.add_heading("1. Executive Summary & Application Purpose", level=1)
-    doc.add_paragraph(str(analysis_result.get("executive_summary", "N/A")))
 
-    # --- CAPITOLO 1: OVERVIEW ---
+    # --- METRICHE / CODE METRICS ---
+    metrics = analysis_result.get("metrics", analysis_result.get("code_metrics", {}))
+
+    if metrics and isinstance(metrics, dict):
+        doc.add_heading("Metrics & Overview Statistics", level=2)
+
+        # Creazione di una tabella Word pulita per le metriche
+        table = doc.add_table(rows=1, cols=2)
+        table.style = "Table Grid"
+
+        # Intestazione tabella
+        hdr_cells = table.rows[0].cells
+        hdr_cells[0].text = "Metric"
+        hdr_cells[1].text = "Value"
+        hdr_cells[0].paragraphs[0].runs[0].font.bold = True
+        hdr_cells[1].paragraphs[0].runs[0].font.bold = True
+
+        # Popolamento dinamico delle chiavi/valori
+        for key, value in metrics.items():
+            row_cells = table.add_row().cells
+
+            # Formatta la chiave da snake_case a Title Case (es. total_lines -> Total Lines)
+            formatted_key = str(key).replace("_", " ").title()
+
+            row_cells[0].text = formatted_key
+            row_cells[1].text = str(value)
+
+        doc.add_paragraph()  # Spaziatore dopo la tabella
+    elif isinstance(metrics, list) and metrics:
+        # Se le metriche sono fornite come lista di stringhe o oggetti
+        doc.add_heading("Metrics", level=2)
+        for item in metrics:
+            doc.add_paragraph(f"• {str(item)}")
+        doc.add_paragraph()
+    
     doc.add_heading("1. Executive Summary & Purpose", level=1)
     
     exec_summary = str(analysis_result.get("executive_summary", "N/A"))

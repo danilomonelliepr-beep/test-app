@@ -169,10 +169,19 @@ def generate_pdf_report(analysis_result: Dict[str, Any], metadata: Dict[str, Any
 
     # --- OVERVIEW ---
     story.append(Paragraph("1. Executive Summary & Purpose", h2_style))
-    story.append(Paragraph(f"<b>Executive Summary:</b> {html.escape(str(analysis_result.get('executive_summary', 'N/A')))}", body_style))
-    story.append(Paragraph(f"<b>Application Purpose:</b> {html.escape(str(analysis_result.get('application_purpose', 'N/A')))}", body_style))
-    if analysis_result.get('technical_notes'):
-        story.append(Paragraph(f"<b>Technical Notes:</b> {html.escape(str(analysis_result.get('technical_notes')))}", body_style))
+    
+    exec_summary = html.escape(str(analysis_result.get('executive_summary', 'N/A')))
+    app_purpose = html.escape(str(analysis_result.get('application_purpose', analysis_result.get('purpose', 'N/A'))))
+    app_notes = html.escape(str(analysis_result.get('notes', analysis_result.get('additional_notes', 'N/A'))))
+
+    story.append(Paragraph(f"<b>Executive Summary:</b> {exec_summary}", body_style))
+    story.append(Paragraph(f"<b>Application Purpose:</b> {app_purpose}", body_style))
+    
+    # Mostra le Note solo se presenti e diverse da N/A
+    if app_notes and app_notes != 'N/A':
+        story.append(Paragraph(f"<b>Notes:</b> {app_notes}", body_style))
+        
+    story.append(Spacer(1, 6))
 
     # Helper che rileva ed estrae TUTTE le colonne dinamiche presenti nei dati
     def build_auto_pdf_table(data: List[Dict[str, Any]], total_width: int = 780):
@@ -397,6 +406,29 @@ def generate_docx_report(analysis_result: Dict[str, Any], metadata: Dict[str, An
     # Strutturazione Sezioni Word
     doc.add_heading("1. Executive Summary & Application Purpose", level=1)
     doc.add_paragraph(str(analysis_result.get("executive_summary", "N/A")))
+
+    # --- CAPITOLO 1: OVERVIEW ---
+    doc.add_heading("1. Executive Summary & Purpose", level=1)
+    
+    exec_summary = str(analysis_result.get("executive_summary", "N/A"))
+    app_purpose = str(analysis_result.get("application_purpose", analysis_result.get("purpose", "N/A")))
+    app_notes = str(analysis_result.get("notes", analysis_result.get("additional_notes", "N/A")))
+
+    p_exec = doc.add_paragraph()
+    p_exec.add_run("Executive Summary: ").bold = True
+    p_exec.add_run(exec_summary)
+
+    p_purp = doc.add_paragraph()
+    p_purp.add_run("Application Purpose: ").bold = True
+    p_purp.add_run(app_purpose)
+
+    if app_notes and app_notes != "N/A":
+        p_notes = doc.add_paragraph()
+        p_notes.add_run("Notes: ").bold = True
+        p_notes.add_run(app_notes)
+        
+    doc.add_paragraph() # Spaziatore
+    
 
     doc.add_heading("2. Business Logic", level=1)
     doc.add_paragraph("Business Processes:").runs[0].bold = True

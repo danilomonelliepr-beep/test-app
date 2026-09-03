@@ -29,7 +29,9 @@ from docx.oxml.ns import nsdecls
 # HELPER: CONVERSIONE MERMAID IN IMMAGINE PNG
 # =============================================================================
 
-def get_mermaid_image_bytes(mermaid_code: str) -> Optional[bytes]:
+def get_mermaid_image_bytes(
+    mermaid_code: str, diag_title: str = "Diagram"
+) -> Optional[bytes]:
     if not mermaid_code or not str(mermaid_code).strip():
         return None
 
@@ -37,20 +39,22 @@ def get_mermaid_image_bytes(mermaid_code: str) -> Optional[bytes]:
         clean_code = str(mermaid_code).strip()
 
         # 1. Rimuove blocchi markdown ```mermaid o ```
-        clean_code = re.sub(r"^```(?:mermaid)?", "", clean_code, flags=re.MULTILINE)
+        clean_code = re.sub(
+            r"^```(?:mermaid)?", "", clean_code, flags=re.MULTILINE
+        )
         clean_code = re.sub(r"^```$", "", clean_code, flags=re.MULTILINE).strip()
 
-        # 2. Rimuove entità HTML se il testo è stato codificato precedentemente
+        # 2. Rimuove entità HTML
         clean_code = html.unescape(clean_code)
 
         if not clean_code:
             return None
 
-        # 3. Encoding URL-Safe Base64 (fondamentale per mermaid.ink)
+        # 3. Base64 URL-Safe Encoding
         graph_bytes = clean_code.encode("utf-8")
         base64_string = base64.urlsafe_b64encode(graph_bytes).decode("utf-8")
 
-        # 4. Richiesta con User-Agent appropriato e parametri di rendering
+        # 4. Richiesta HTTP a mermaid.ink
         url = f"https://mermaid.ink/img/{base64_string}"
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -58,16 +62,15 @@ def get_mermaid_image_bytes(mermaid_code: str) -> Optional[bytes]:
 
         response = requests.get(url, headers=headers, timeout=10)
 
-        # mermaid.ink restituisce un PNG valido sopra i 100 byte
         if response.status_code == 200 and len(response.content) > 100:
             return response.content
         else:
             print(
-                f"[Mermaid Render Error] HTTP {response.status_code}: {response.text[:200]}"
+                f"[Mermaid Error - {diag_title}] HTTP {response.status_code}: {response.text[:200]}"
             )
 
     except Exception as e:
-        print(f"[Mermaid Exception] {str(e)}")
+        print(f"[Mermaid Exception - {diag_title}] {str(e)}")
 
     return None
 

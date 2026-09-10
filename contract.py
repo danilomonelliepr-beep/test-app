@@ -420,8 +420,13 @@ def schema_gemini() -> Dict[str, Any]:
         }
     for m in CAMPI_MERMAID:
         prop[m] = {"type": "ARRAY", "items": {"type": "STRING"}}
+    # I quattro diagrammi vanno fra gli OBBLIGATORI. Erano rimasti fuori, e
+    # ometterli era quindi formalmente legittimo: il modello che si stancava
+    # dopo dodici sezioni non stava violando niente. Ora deve almeno dichiarare
+    # una lista vuota, e la lista vuota è un fatto che l'app sa gestire.
     return {"type": "OBJECT", "properties": prop,
-            "required": ["executive_summary", "application_purpose"] + list(CAMPI.keys())}
+            "required": (["executive_summary", "application_purpose"]
+                         + list(CAMPI.keys()) + list(CAMPI_MERMAID))}
 
 
 # =============================================================================
@@ -632,7 +637,7 @@ def _riga(nome: str, grezza: Any, avvisi: List[str]) -> Dict[str, Any]:
         # e si accetta; per le altre è un errore e si scarta.
         chiave = spec.get("da_stringa")
         if not chiave or not _testo(grezza).strip():
-            avvisi.append(f"{nome}: riga scartata (non è un oggetto)")
+            avvisi.append(f"{nome}: row dropped (not an object)")
             return {}
         grezza = {chiave: _testo(grezza)}
     riga: Dict[str, Any] = {}
@@ -646,7 +651,7 @@ def _riga(nome: str, grezza: Any, avvisi: List[str]) -> Dict[str, Any]:
         if enum:
             v, cambiato = _normalizza_enum(campo, valore, enum)
             if cambiato and _testo(valore).strip():
-                avvisi.append(f"{nome}.{campo}: «{_testo(valore)[:24]}» → {v}")
+                avvisi.append(f"{nome}.{campo}: \"{_testo(valore)[:24]}\" normalised to {v}")
             riga[campo] = v
         else:
             riga[campo] = _testo(valore).strip()[:MAX_CELLA]
@@ -674,24 +679,24 @@ def normalizza(grezzo: Any, avvisi_iniziali: List[str] = None) -> Dict[str, Any]
     avvisi: List[str] = list(avvisi_iniziali or [])
     fuori: Dict[str, Any] = json.loads(json.dumps(RISULTATO_VUOTO))
     if not isinstance(grezzo, dict):
-        avvisi.append("La risposta non era un oggetto JSON: risultato vuoto.")
+        avvisi.append("The answer was not a JSON object: empty result.")
         fuori["contract_warnings"] = avvisi
         return fuori
 
     for campo in CAMPI_TESTO:
         fuori[campo] = _testo(grezzo.get(campo)).strip()
         if not fuori[campo]:
-            avvisi.append(f"{campo}: mancante nella risposta")
+            avvisi.append(f"{campo}: missing from the answer")
 
     for nome, spec in CAMPI.items():
         grezze = grezzo.get(nome)
         if grezze is None:
-            avvisi.append(f"{nome}: sezione assente nella risposta")
+            avvisi.append(f"{nome}: section absent from the answer")
             grezze = []
         if isinstance(grezze, dict):  # un oggetto solo invece di una lista
             grezze = [grezze]
         if not isinstance(grezze, list):
-            avvisi.append(f"{nome}: non era una lista, ignorata")
+            avvisi.append(f"{nome}: was not a list, ignored")
             grezze = []
         righe = []
         viste = set()
@@ -709,7 +714,7 @@ def normalizza(grezzo: Any, avvisi_iniziali: List[str] = None) -> Dict[str, Any]
     for campo in CAMPI_MERMAID:
         fuori[campo] = pulisci_mermaid(grezzo.get(campo))
         if not fuori[campo]:
-            avvisi.append(f"{campo}: diagramma assente o non utilizzabile")
+            avvisi.append(f"{campo}: no usable diagram in the model's answer")
 
     fuori["contract_version"] = VERSIONE_CONTRATTO
     fuori["contract_warnings"] = avvisi
@@ -758,7 +763,7 @@ def unisci(risultati: List[Dict[str, Any]]) -> Dict[str, Any]:
         candidati = [r.get(campo, "") for r in risultati if r.get(campo, "")]
         fuori[campo] = max(candidati, key=lambda s: len(s.splitlines())) if candidati else ""
         if len(candidati) > 1:
-            avvisi.append(f"{campo}: {len(candidati)} versioni dai lotti, tenuta la più completa")
+            avvisi.append(f"{campo}: {len(candidati)} versions across batches, kept the most complete one")
     for r in risultati:
         avvisi.extend(r.get("contract_warnings", []) or [])
     fuori["contract_version"] = VERSIONE_CONTRATTO

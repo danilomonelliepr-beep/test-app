@@ -23,6 +23,8 @@ mettere nell'ambiente: `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`,
 | `model_chain.py` | Scoperta, prova e scalata dei modelli (impianto di Nuvia) |
 | `contract.py` | Il contratto JSON: prompt, schema, riparazione, normalizzazione |
 | `exporter.py` | Generazione PDF e Word |
+| `diagrams.py` | I quattro diagrammi ricavati dai dati validati |
+| `mermaid_render.py` | Disegno dei diagrammi, in locale se possibile |
 | `test_catena.py` | Collaudo, senza rete e senza chiavi |
 
 ### La catena dei modelli
@@ -54,10 +56,30 @@ riparata se troncata, gli enum raddrizzati, gli id assegnati dal codice, i
 doppioni tolti e i diagrammi ripuliti. Quello che l'app ha dovuto correggere è
 scritto in chiaro nella scheda con gli avvisi di contratto.
 
+### I diagrammi
+
+I quattro diagrammi arrivano dal modello quando li produce, e vengono
+costruiti dalle tabelle quando non li produce (o li produce troppo scarni):
+sono le stesse dipendenze, gli stessi flussi e gli stessi processi che si
+vedono nelle schede. Nella scheda *Diagrams* si sceglie quale versione
+guardare e si possono rifare dalle tabelle dopo le correzioni dello SME.
+
+Il disegno vero e proprio avviene **in locale**, se sulla macchina c'è mermaid-cli:
+
+```bash
+npm install -g @mermaid-js/mermaid-cli    # si porta dietro un Chromium
+python mermaid_render.py                  # verifica: deve dire «locale (mmdc)»
+```
+
+Senza mermaid-cli l'app ricade sul servizio pubblico `mermaid.ink`, a cui il
+codice del diagramma esce dalla macchina. `MERMAID_LOCAL_ONLY=1` lo vieta: in
+quel caso i documenti portano il sorgente del diagramma invece dell'immagine.
+La scheda *Downloads* dice sempre quale dei due sta per succedere.
+
 ## Collaudo
 
 ```bash
-python test_catena.py     # 29 casi, nessuna rete, nessuna chiave, nessun costo
+python test_catena.py     # 45 casi, nessuna rete, nessuna chiave, nessun costo
 ```
 
 ## Modifiche

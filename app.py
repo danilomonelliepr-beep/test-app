@@ -12,6 +12,8 @@ from sqlglot import exp
 from streamlit_mermaid import st_mermaid
 
 import contract
+import diagrams
+import mermaid_render
 from exporter import generate_docx_report, generate_pdf_report
 from model_chain import CatenaModelli, NessunModello
 
@@ -507,7 +509,10 @@ def merge_static_and_ai_results(ai_result, metadata):
     }
     for nome, righe in statiche.items():
         r[nome] = contract.unisci_righe(nome, r.get(nome, []), righe)
-    return contract.numera_id(r)
+    r = contract.numera_id(r)
+    # I diagrammi si costruiscono DOPO l'unione, così il call graph contiene
+    # anche le dipendenze trovate dal parser, non solo quelle viste dal modello.
+    return diagrams.arricchisci(r)
 
 def analysis_signature(sources, provider, model_name, preferenza):
     """L'impronta dell'analisi: stessi file, stesso provider, stesso contratto
@@ -801,15 +806,46 @@ with tabs[4]:
     result["impact_analysis"] = render_contract_section("impact_analysis", result, "impact_edit")
 
 with tabs[5]:
-    dt = st.selectbox("Diagram", ["Process Flow", "App Map", "Data Flow", "Call Graph"])
-    if dt == "Process Flow":
-        render_mermaid_diagram("Process Flow", result.get("mermaid_process_flow"), "bp.mmd")
-    elif dt == "App Map":
-        render_mermaid_diagram("App Map", result.get("mermaid_application_map"), "app.mmd")
-    elif dt == "Data Flow":
-        render_mermaid_diagram("Data Flow", result.get("mermaid_data_flow"), "df.mmd")
+    DIAGRAMMI = {
+        "Process Flow": ("mermaid_process_flow", "bp.mmd"),
+        "App Map": ("mermaid_application_map", "app.mmd"),
+        "Data Flow": ("mermaid_data_flow", "df.mmd"),
+        "Call Graph": ("mermaid_call_graph", "cg.mmd"),
+    }
+    col_a, col_b = st.columns([2, 1])
+    dt = col_a.selectbox("Diagram", list(DIAGRAMMI))
+    campo, nomefile = DIAGRAMMI[dt]
+    dai_dati = (result.get("_diagrammi_dai_dati") or {}).get(campo, "")
+    dal_modello = (result.get("_diagrammi_dal_modello") or {}).get(campo, "")
+
+    # Due versioni dello stesso diagramma: quella del modello e quella
+    # costruita dalle tabelle. La seconda non può contraddire le tabelle,
+    # perché è le tabelle — e si rifà dopo le correzioni dello SME.
+    scelte = []
+    if dal_modello.strip():
+        scelte.append("From the model")
+    if dai_dati.strip():
+        scelte.append("Built from the tables")
+    if len(scelte) > 1:
+        predefinita = "Built from the tables" if result.get(campo) == dai_dati else "From the model"
+        sorgente = col_b.radio("Source", scelte, index=scelte.index(predefinita), horizontal=True)
+        diagramma = dai_dati if sorgente == "Built from the tables" else dal_modello
     else:
-        render_mermaid_diagram("Call Graph", result.get("mermaid_call_graph"), "cg.mmd")
+        diagramma = result.get(campo) or dai_dati or dal_modello
+        if scelte == ["Built from the tables"]:
+            col_b.caption("Built from the tables — the model did not return this one.")
+
+    if st.button("🔄 Rebuild from the current tables", use_container_width=True,
+                 help="Redraws all four diagrams from the rows as they are now, "
+                      "including the SME's corrections."):
+        result["_diagrammi_dai_dati"] = diagrams.costruisci(result)
+        for _c in diagrams.COSTRUTTORI:
+            if result["_diagrammi_dai_dati"].get(_c):
+                result[_c] = result["_diagrammi_dai_dati"][_c]
+        st.session_state["analysis_result"] = result
+        st.rerun()
+
+    render_mermaid_diagram(dt, diagramma, nomefile)
 
 with tabs[6]:
     st.caption("What the model could not settle on its own. These are the rows to take "
@@ -828,6 +864,20 @@ with tabs[8]:
     st.markdown("### 📥 Export Validated Knowledge Artifacts")
     st.write("Generate and download the complete technical documentation including all "
              "SME-validated business rules, technical risks and architectural metadata.")
+    # Dove vengono disegnati i diagrammi va detto PRIMA di premere il bottone:
+    # il codice mermaid descrive l'applicazione del cliente, e mandarlo a un
+    # servizio pubblico è una decisione, non un dettaglio di implementazione.
+    _locale_ok, _locale_dettaglio = mermaid_render.disponibile()
+    if _locale_ok:
+        st.caption(f"Diagrams are rendered locally — nothing leaves this machine ({_locale_dettaglio}).")
+    elif os.environ.get("MERMAID_LOCAL_ONLY") == "1":
+        st.warning("Local diagram rendering is unavailable and the external service is "
+                   f"disabled: documents will carry the diagram source instead of the image. ({_locale_dettaglio})")
+    else:
+        st.warning("Local diagram rendering is unavailable, so diagram code will be sent to the "
+                   f"public mermaid.ink service. ({_locale_dettaglio}) "
+                   "Install it with: npm install -g @mermaid-js/mermaid-cli — "
+                   "or set MERMAID_LOCAL_ONLY=1 to forbid the external call.")
     # I due export costano: il PDF scarica quattro diagrammi da mermaid.ink. Prima
     # venivano rigenerati a OGNI interazione con la pagina, anche solo per spuntare
     # una casella. Ora si generano quando servono, e il risultato si tiene in cache.

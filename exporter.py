@@ -7,6 +7,8 @@ import requests
 
 import streamlit as st
 
+import mermaid_render
+
 # ReportLab (Engine PDF)
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
@@ -39,57 +41,14 @@ from docx.shared import Inches, Pt, RGBColor
 def get_mermaid_image_bytes(
     mermaid_code: str, diag_title: str = "Diagram"
 ) -> Optional[bytes]:
-    if not mermaid_code or not str(mermaid_code).strip():
-        return None
+    """Il PNG del diagramma.
 
-    try:
-        clean_code = str(mermaid_code).strip()
-
-        # 1. Rimuove blocchi markdown ```mermaid o ```
-        clean_code = re.sub(
-            r"^```(?:mermaid)?", "", clean_code, flags=re.MULTILINE
-        )
-        clean_code = re.sub(r"^```$", "", clean_code, flags=re.MULTILINE).strip()
-
-        # 2. Rimuove entità HTML
-        clean_code = html.unescape(clean_code)
-
-        if not clean_code:
-            return None
-
-        # 3. Base64 URL-Safe Encoding
-        graph_bytes = clean_code.encode("utf-8")
-        base64_string = base64.urlsafe_b64encode(graph_bytes).decode("utf-8")
-
-        # 4. Richiesta HTTP a mermaid.ink, con un secondo tentativo.
-        # È un servizio esterno dentro la generazione di un documento: un suo
-        # singolo intoppo non deve costare al collega un PDF senza diagrammi,
-        # perché lì il diagramma manca e basta, senza spiegazioni.
-        url = f"https://mermaid.ink/img/{base64_string}"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
-        if len(url) > 8000:
-            print(f"[Mermaid - {diag_title}] diagramma troppo grande per l'URL, saltato")
-            return None
-
-        for tentativo in (1, 2):
-            try:
-                response = requests.get(url, headers=headers, timeout=20)
-            except requests.RequestException as e:
-                print(f"[Mermaid - {diag_title}] tentativo {tentativo}: {e}")
-                continue
-            if response.status_code == 200 and len(response.content) > 100:
-                return response.content
-            # 400 = il diagramma non è valido: riprovare darebbe lo stesso 400.
-            print(f"[Mermaid - {diag_title}] tentativo {tentativo}: HTTP {response.status_code}")
-            if response.status_code < 500:
-                break
-
-    except Exception as e:
-        print(f"[Mermaid Exception - {diag_title}] {str(e)}")
-
-    return None
+    Il disegno vero è in `mermaid_render`: prima si prova in locale con mmdc
+    (niente esce dalla macchina), e solo se non è possibile si ricade sul
+    servizio pubblico. Qui resta solo la porta d'ingresso, perché il resto
+    dell'esportatore non deve sapere chi ha disegnato.
+    """
+    return mermaid_render.rendi(mermaid_code, diag_title)
 
 
 # =============================================================================
@@ -572,7 +531,18 @@ def generate_pdf_report(
 
             if img_bytes:
                 img_buf = io.BytesIO(img_bytes)
-                story.append(Image(img_buf, width=720, height=240))
+                # Le proporzioni si prendono dal PNG. Prima era 720x240 fisso,
+                # cioè 3:1 qualunque forma avesse il disegno: un flowchart TD
+                # con otto nodi in colonna è più alto che largo, e schiacciato
+                # in un rettangolo 3:1 diventava una striscia illeggibile.
+                # (Nel Word non succedeva: lì si passava solo la larghezza.)
+                larghezza, altezza = mermaid_render.misura_per_riquadro(
+                    img_bytes, max_larghezza=780, max_altezza=460
+                )
+                immagine = Image(img_buf, width=larghezza, height=altezza)
+                immagine.hAlign = "CENTER"
+                story.append(immagine)
+                story.append(Spacer(1, 10))
             else:
                 clean_txt = html.escape(str(diag_code).strip()).replace(
                     "\n", "<br/>"
@@ -882,7 +852,14 @@ def generate_docx_report(
             img_bytes = get_mermaid_image_bytes(str(diag_code), diag_title)
             if img_bytes:
                 img_buf = io.BytesIO(img_bytes)
-                doc.add_picture(img_buf, width=Inches(9.5))
+                # Qui le proporzioni erano già giuste (si passa solo la
+                # larghezza e python-docx calcola l'altezza), ma un diagramma
+                # molto alto sforava la pagina: si vincola il lato lungo.
+                misura = mermaid_render.dimensioni_png(img_bytes)
+                if misura and misura[1] / misura[0] > 6.6 / 9.5:
+                    doc.add_picture(img_buf, height=Inches(6.6))
+                else:
+                    doc.add_picture(img_buf, width=Inches(9.5))
             else:
                 p_code = doc.add_paragraph(str(diag_code).strip())
                 p_code.style.font.name = "Courier New"

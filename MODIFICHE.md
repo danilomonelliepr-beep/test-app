@@ -1,9 +1,10 @@
 # Modifiche — Legacy Application Knowledge Extractor
 
-Versione contratto JSON: **2.0** · Collaudo: `python test_catena.py` → 29/29
+Versione contratto JSON: **2.0** · Collaudo: `python test_catena.py` → 45/45
 
-Tre blocchi: **A** la catena modelli presa da Nuvia, **B** il contratto JSON,
-**C** il resto (difetti trovati per strada e robustezza).
+Quattro blocchi: **A** la catena modelli presa da Nuvia, **B** il contratto JSON,
+**C** difetti trovati per strada e robustezza, **D** i diagrammi (disegno locale e
+correzione dello schiacciamento nel PDF), **E** i diagrammi mancanti.
 
 ---
 
@@ -74,7 +75,7 @@ non possono divergere.
 | C1 | **`exp` non copre più il modulo `sqlglot.exp`** in `parse_sql_expressions` (la variabile si chiama `parsed`). | Era `[exp for exp in expressions …]`: dentro quella funzione il modulo `exp` smetteva di esistere. Non è mai esploso solo perché lì non serviva — un errore in attesa. |
 | C2 | **Sintesi esecutiva presa dalla radice** (`extract_field` guarda prima la radice, poi in profondità). | Cercando anche `description` in tutto il JSON, con un summary vuoto il PDF stampava come sintesi esecutiva la descrizione del primo rischio tecnico. Sbagliato in un modo che nessuno nota finché non lo legge il cliente. |
 | C3 | **PDF e Word generati su richiesta e messi in cache**, non a ogni ricaricamento della pagina. | Prima ogni spunta su una casella rigenerava PDF *e* Word, scaricando otto immagini da `mermaid.ink`: pagina lentissima e un servizio esterno martellato per niente. |
-| C4 | **`mermaid.ink`: secondo tentativo, timeout 20 s, niente riprova sui 4xx, guardia sulla lunghezza dell'URL.** | Un intoppo momentaneo non deve costare un PDF senza diagrammi; un diagramma non valido darebbe lo stesso 400 all'infinito. |
+| C4 | **`mermaid.ink`: secondo tentativo, timeout 20 s, niente riprova sui 4xx, guardia sulla lunghezza dell'URL.** Ora vale solo come ricaduta: vedi il blocco D. | Un intoppo momentaneo non deve costare un PDF senza diagrammi; un diagramma non valido darebbe lo stesso 400 all'infinito. |
 | C5 | **Analisi a lotti.** Oltre ~120.000 caratteri il sorgente si divide in lotti (mai spezzando un file), ogni lotto è un'analisi completa e i risultati si uniscono. Tetto totale alzato da 180.000 a 1.500.000 caratteri. | Prima, oltre una certa dimensione, il modello troncava e l'analisi si perdeva senza che nessuno lo dicesse. Un file spezzato a metà dà regole di business monche, che è peggio di un file in meno. |
 | C6 | **Riuso dell'analisi a parità di ingresso** (impronta di file + provider + contratto), con casella «Force re-analysis». | Streamlit riesegue lo script a ogni interazione: prima bastava una spunta per far ripartire tre minuti di modello a pagamento. |
 | C7 | **Barra di avanzamento per lotto** con i nomi dei file in lavorazione. | Su una codebase vera l'attesa è di minuti: senza avanzamento sembra bloccata. |
@@ -85,9 +86,36 @@ non possono divergere.
 | C12 | **Controllo dell'endpoint Azure** prima di partire, e **il deployment scritto a mano resta sempre primo in catena**. | Su Azure il nome chiamabile è il deployment, che solo chi ha creato la risorsa conosce: non è derivabile e non va scavalcato dalla scoperta. |
 | C13 | **Metriche in interfaccia**: aggiunte «Business rules» e il modello che ha risposto, i lotti eseguiti, la versione del contratto. | Serve sapere chi ha scritto il documento che si sta per firmare. |
 | C14 | **Sorgente del diagramma sempre consultabile** in un pannello, anche quando il disegno riesce. | Quando un diagramma non si disegna, il sorgente è l'unico modo per capire perché. |
-| C15 | **Collaudo automatico `test_catena.py`** — 29 casi, nessuna rete, nessuna chiave, nessun costo: scoperta, scalata, memoria, messaggi, tetti, riparazione JSON, enum, Mermaid, lotti. | Porting del collaudo di Nuvia. È il modo per cambiare una regola e sapere subito cosa si rompe. |
+| C15 | **Collaudo automatico `test_catena.py`** — 45 casi, nessuna rete, nessuna chiave, nessun costo: scoperta, scalata, memoria, messaggi, tetti, riparazione JSON, enum, Mermaid, lotti. | Porting del collaudo di Nuvia. È il modo per cambiare una regola e sapere subito cosa si rompe. |
 | C16 | **`requirements.txt`**: tolti `openai`, `anthropic`, `google-genai`; `requests` è ora una dipendenza dichiarata dell'app, non solo dell'esportatore. | Vedi A16. Tre dipendenze pesanti in meno da aggiornare e da far passare in azienda. |
 | C17 | **README vero** (prima conteneva la parola «Ciao») e questo elenco. | — |
+
+---
+
+## E · I diagrammi che il modello non consegna
+
+Segnalazione dal campo: nel pannello degli avvisi comparivano tre righe
+«diagramma assente o non utilizzabile» — il modello aveva prodotto un diagramma
+su quattro. Non era un guasto dell'app (l'avviso era l'app che diceva la verità),
+ma il risultato mancava lo stesso.
+
+Causa: i quattro diagrammi sono l'ultima cosa che il contratto chiede, dopo
+dodici sezioni, ed è il punto in cui i modelli mollano. Con un aggravante mio,
+vedi E1.
+
+| # | Modifica | Perché |
+|---|---|---|
+| E1 | **I quattro campi Mermaid sono ora obbligatori nello schema di Gemini.** Erano rimasti fuori da `required`. | Ometterli era formalmente legittimo: il modello che si stancava non stava violando niente. Ora deve almeno dichiarare una lista vuota, e una lista vuota è un fatto che l'app sa gestire. |
+| E2 | **Nuovo `diagrams.py`: i quattro diagrammi si costruiscono dai dati.** `call graph` = `dependencies`, `application map` = `application_mapping` (o `interfaces`), `data flow` = `data_flows` (o `data_objects`), `process flow` = `business_processes` (trigger → processo → esito, con i componenti coinvolti appesi). | Quei disegni non contengono niente che non sia già nelle tabelle. Chiederli al modello è chiedergli di ridisegnare a mano una cosa che abbiamo già in forma strutturata — e infatti a volte tornava con nodi che nelle tabelle non esistono. |
+| E3 | **Si costruiscono DOPO l'unione con l'analisi statica.** | Così il call graph contiene anche le dipendenze trovate dal parser, non solo quelle viste dal modello. |
+| E4 | **Il disegno del modello non viene buttato.** Se ha prodotto qualcosa di sostanzioso (almeno tre righe) resta lui; sotto quella soglia si mostra quello costruito dai dati. Entrambe le versioni restano nel risultato. | Sul process flow il modello dà davvero qualcosa in più: sa mettere i passi in ordine. Sugli altri tre, quello costruito dai dati è normalmente migliore. |
+| E5 | **Interruttore in interfaccia** (*From the model* / *Built from the tables*) quando esistono tutte e due. | La scelta dev'essere reversibile da chi guarda, non decisa una volta per tutte dal codice. |
+| E6 | **Bottone «Rebuild from the current tables».** | È il punto vero: prima lo SME cancellava una dipendenza sbagliata e il diagramma continuava a mostrarla. Il documento firmato conteneva due verità diverse. |
+| E7 | **Tetti e sfoltimento**: massimo 40 archi, 8 processi, etichette a 44 caratteri, e una riga «… e altri N non mostrati». Quando le dipendenze eccedono, le `PROBABLE_CALL` e le confidenze basse sono le prime a uscire. | Un diagramma con duecento archi non documenta niente. Meglio venti archi veri e la dichiarazione di quanti ne restano fuori. |
+| E8 | **Nodi sempre validi per costruzione**: id ripuliti e unici, mai a cominciare per cifra, etichette senza `( ) [ ] { } " ; \|`, tutti rettangoli. | Sono esattamente gli errori che facevano fallire il disegno quando il mermaid lo scriveva il modello. |
+| E9 | **Un diagramma che non si costruisce non fa cadere l'analisi** (eccezione catturata per diagramma). | — |
+| E10 | **Avvisi di contratto tradotti in inglese**, come il resto dell'interfaccia, e più precisi: distinguono «non consegnato» da «troppo scarno» da «né il modello né le tabelle bastano». | Erano in italiano dentro un'interfaccia inglese — è la riga che ha visto il collega. |
+| E11 | **Undici casi in più nel collaudo**, incluso quello che riproduce la segnalazione: modello che consegna un diagramma su quattro. | — |
 
 ---
 
@@ -99,14 +127,95 @@ non possono divergere.
   come in Nuvia.
 - L'analisi statica (sqlglot + espressioni regolari) resta l'ancora dei fatti:
   nessuna delle modifiche la sostituisce con il modello.
+- Il modello continua a essere interrogato sui diagrammi: la costruzione dai
+  dati è una rete, non un rimpiazzo.
 
-## Da decidere insieme
+## D · Diagrammi disegnati in casa, e la forma giusta nel PDF
 
-1. **`Quality first` come predefinito** (A3): costa più di Nuvia per esecuzione.
-   Se il pilota deve girare su molte applicazioni, forse conviene `Speed first`
-   con un secondo passaggio in qualità solo sulle regole di business.
-2. **Chiavi nella barra laterale**: funzionano, ma se l'app viene esposta a più
-   utenti vanno spostate su variabili d'ambiente o su un gestore di segreti.
-3. **`mermaid.ink` è un servizio esterno**: il codice dei diagrammi ci esce
-   dall'azienda. Se è un problema, va sostituito con un mermaid-cli locale
-   (~20 righe, nessun'altra modifica).
+Nuovo file **`mermaid_render.py`**. Prima l'unico modo di ottenere l'immagine di
+un diagramma era `mermaid.ink`: il codice Mermaid dell'applicazione del cliente
+veniva messo in un URL e mandato a un servizio pubblico.
+
+| # | Modifica | Perché |
+|---|---|---|
+| D1 | **Disegno locale con `mmdc`** (`@mermaid-js/mermaid-cli`), che è mermaid.js dentro un Chromium headless — lo stesso motore di mermaid.ink, sulla nostra macchina. Stessa libreria, stessa immagine. | Su una codebase altrui, mandare fuori la mappa applicativa è una decisione, non un dettaglio di implementazione. |
+| D2 | **Ordine dei tentativi**: `mmdc` → `npx` (solo con `MERMAID_ALLOW_NPX=1`, perché scarica un pacchetto) → `mermaid.ink` come rete di sicurezza. | L'app continua a girare dove Node non c'è, senza che nessuno debba installare niente per provarla. |
+| D3 | **`MERMAID_LOCAL_ONLY=1` vieta del tutto l'uscita.** In quel caso il documento porta il sorgente del diagramma invece dell'immagine. | Serve un interruttore netto per gli ambienti dove la cosa non è negoziabile. |
+| D4 | **`--no-sandbox` gestito** con un file di configurazione temporaneo per Puppeteer, e rispetto di `PUPPETEER_EXECUTABLE_PATH`. | Senza `--no-sandbox` Chromium non parte dentro un container, con un errore che non nomina la sandbox: è il primo scoglio di chiunque installi mmdc su un server. Con `PUPPETEER_EXECUTABLE_PATH` si riusa il Chrome già presente ed si evita il download da 300 MB, utile dietro un proxy aziendale. |
+| D5 | **Configurazione del disegno**: tema `neutral`, larghezza 2.400 px, `maxTextSize` e `maxEdges` alzati. | I limiti predefiniti di mermaid tagliano le mappe applicative vere. |
+| D6 | **Niente più tetto sulla lunghezza dell'URL** quando si disegna in locale. | Il vincolo degli 8.000 caratteri era del servizio esterno: in locale le mappe grosse si disegnano e basta. |
+| D7 | **Gli errori di sintassi di mermaid arrivano interi** (riga e colonna) nei log, invece del 400 muto del servizio. | Quando un diagramma non esce, ora si sa perché. |
+| D8 | **Cache sull'impronta del codice**: PDF e Word chiedono gli stessi quattro diagrammi, si disegnano una volta sola. | Prima erano otto disegni per un'esportazione completa. |
+| D9 | **Diagnostica**: `python mermaid_render.py` disegna un diagramma di prova e dice chi l'ha disegnato, scrivendo `prova_mermaid.png`. Nella scheda Downloads l'app dice, **prima** che si prema il bottone, se i diagrammi restano in casa o no. | Da lanciare su ogni macchina prima di dire «i diagrammi non escono più dall'azienda». |
+| **D10** | **CORRETTO: i diagrammi schiacciati nel PDF.** L'immagine veniva inserita con misure fisse `width=720, height=240` — 3:1, qualunque forma avesse davvero. Ora le proporzioni si leggono dal PNG e si adatta al riquadro disponibile (780×460 pt), centrata. | Era il difetto noto: un `flowchart TD` con otto nodi in colonna è alto due volte e mezzo la sua larghezza, e schiacciato in un 3:1 diventava una striscia illeggibile. Nel Word non succedeva perché lì si passava **solo** la larghezza e l'altezza la calcolava python-docx: le proporzioni erano già rispettate. Verificato sul PDF finito: un disegno 800×2000 esce 1:2,5 e uno 2400×400 esce 6:1. |
+| D11 | **Word: vincolo sull'altezza** quando il diagramma è più alto che largo (oltre 6,6 pollici si passa l'altezza invece della larghezza). | Le proporzioni erano giuste, ma un diagramma molto alto sforava la pagina. |
+| D12 | **Lettura delle dimensioni PNG senza PIL** (24 byte di intestazione). | Nessuna dipendenza in più per una cosa che sono quattro righe. |
+| D13 | **Cinque casi in più nel collaudo** sulla geometria dei diagrammi, incluso il caso che riproduce il difetto D10. | Un difetto corretto senza un caso di collaudo torna. |
+
+### Installazione del disegno locale
+
+```bash
+npm install -g @mermaid-js/mermaid-cli    # si porta dietro un Chromium (~300 MB)
+python mermaid_render.py                  # verifica: deve dire «locale (mmdc)»
+```
+
+Se sulla macchina c'è già Chrome:
+`export PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome` prima dell'installazione.
+
+> Nota onesta: il disegno locale non è stato provato end-to-end nell'ambiente in
+> cui è stato scritto, perché lì il download di Chromium è bloccato dalla rete.
+> Sono stati provati per davvero la scelta del motore, la ricaduta sul servizio
+> esterno, la geometria e i due documenti finiti. Il primo `python
+> mermaid_render.py` su una macchina vostra è il collaudo che manca.
+
+---
+
+## E · I diagrammi che il modello non consegna
+
+Segnalazione dal campo: nel pannello degli avvisi comparivano tre righe
+«diagramma assente o non utilizzabile» — il modello aveva prodotto un diagramma
+su quattro. Non era un guasto dell'app (l'avviso era l'app che diceva la verità),
+ma il risultato mancava lo stesso.
+
+Causa: i quattro diagrammi sono l'ultima cosa che il contratto chiede, dopo
+dodici sezioni, ed è il punto in cui i modelli mollano. Con un aggravante mio,
+vedi E1.
+
+| # | Modifica | Perché |
+|---|---|---|
+| E1 | **I quattro campi Mermaid sono ora obbligatori nello schema di Gemini.** Erano rimasti fuori da `required`. | Ometterli era formalmente legittimo: il modello che si stancava non stava violando niente. Ora deve almeno dichiarare una lista vuota, e una lista vuota è un fatto che l'app sa gestire. |
+| E2 | **Nuovo `diagrams.py`: i quattro diagrammi si costruiscono dai dati.** `call graph` = `dependencies`, `application map` = `application_mapping` (o `interfaces`), `data flow` = `data_flows` (o `data_objects`), `process flow` = `business_processes` (trigger → processo → esito, con i componenti coinvolti appesi). | Quei disegni non contengono niente che non sia già nelle tabelle. Chiederli al modello è chiedergli di ridisegnare a mano una cosa che abbiamo già in forma strutturata — e infatti a volte tornava con nodi che nelle tabelle non esistono. |
+| E3 | **Si costruiscono DOPO l'unione con l'analisi statica.** | Così il call graph contiene anche le dipendenze trovate dal parser, non solo quelle viste dal modello. |
+| E4 | **Il disegno del modello non viene buttato.** Se ha prodotto qualcosa di sostanzioso (almeno tre righe) resta lui; sotto quella soglia si mostra quello costruito dai dati. Entrambe le versioni restano nel risultato. | Sul process flow il modello dà davvero qualcosa in più: sa mettere i passi in ordine. Sugli altri tre, quello costruito dai dati è normalmente migliore. |
+| E5 | **Interruttore in interfaccia** (*From the model* / *Built from the tables*) quando esistono tutte e due. | La scelta dev'essere reversibile da chi guarda, non decisa una volta per tutte dal codice. |
+| E6 | **Bottone «Rebuild from the current tables».** | È il punto vero: prima lo SME cancellava una dipendenza sbagliata e il diagramma continuava a mostrarla. Il documento firmato conteneva due verità diverse. |
+| E7 | **Tetti e sfoltimento**: massimo 40 archi, 8 processi, etichette a 44 caratteri, e una riga «… e altri N non mostrati». Quando le dipendenze eccedono, le `PROBABLE_CALL` e le confidenze basse sono le prime a uscire. | Un diagramma con duecento archi non documenta niente. Meglio venti archi veri e la dichiarazione di quanti ne restano fuori. |
+| E8 | **Nodi sempre validi per costruzione**: id ripuliti e unici, mai a cominciare per cifra, etichette senza `( ) [ ] { } " ; \|`, tutti rettangoli. | Sono esattamente gli errori che facevano fallire il disegno quando il mermaid lo scriveva il modello. |
+| E9 | **Un diagramma che non si costruisce non fa cadere l'analisi** (eccezione catturata per diagramma). | — |
+| E10 | **Avvisi di contratto tradotti in inglese**, come il resto dell'interfaccia, e più precisi: distinguono «non consegnato» da «troppo scarno» da «né il modello né le tabelle bastano». | Erano in italiano dentro un'interfaccia inglese — è la riga che ha visto il collega. |
+| E11 | **Undici casi in più nel collaudo**, incluso quello che riproduce la segnalazione: modello che consegna un diagramma su quattro. | — |
+
+---
+
+## Cosa NON è stato cambiato
+
+- La struttura di `exporter.py` (PDF e Word): correzioni chirurgiche soltanto
+  (C2, C4, D1, D10, D11). Impaginazione, stili e sezioni sono rimasti quelli.
+- **Le chiavi restano nella barra laterale**: è un prototipo, va bene così. Da
+  rivedere solo se l'app viene esposta a più utenti.
+- **`Quality first` resta il predefinito**: la catena parte dai modelli grandi.
+  `Speed / cost first` è lì per chi vuole la regola di Nuvia.
+- L'interfaccia resta in inglese; i commenti dei file nuovi sono in italiano,
+  come in Nuvia.
+- L'analisi statica (sqlglot + espressioni regolari) resta l'ancora dei fatti:
+  nessuna delle modifiche la sostituisce con il modello.
+- Il modello continua a essere interrogato sui diagrammi: la costruzione dai
+  dati è una rete, non un rimpiazzo.
+
+## Dipendenze
+
+Python: `streamlit`, `streamlit-mermaid`, `sqlglot`, `pandas`, `requests`,
+`reportlab`, `python-docx`. Tolti `openai`, `anthropic`, `google-genai`.
+
+Fuori da Python, facoltativo ma consigliato:
+`npm install -g @mermaid-js/mermaid-cli`.

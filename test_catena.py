@@ -293,6 +293,101 @@ s = contract.schema_gemini()
 P("lo schema nativo elenca tutte le sezioni del contratto",
   all(k in s["properties"] for k in contract.CAMPI))
 
+
+# =============================================================================
+# I DIAGRAMMI (senza disegnarli davvero: si controlla la geometria)
+# =============================================================================
+import io as _io
+
+import mermaid_render as mr
+
+
+def _png(w, h):
+    """Un PNG minimo valido, scritto a mano: serve solo l'intestazione."""
+    import struct
+    import zlib
+
+    grezzo = b"".join(b"\x00" + b"\xff" * (w * 3) for _ in range(h))
+
+    def blocco(tipo, dati):
+        return (struct.pack(">I", len(dati)) + tipo + dati
+                + struct.pack(">I", zlib.crc32(tipo + dati) & 0xFFFFFFFF))
+    return (b"\x89PNG\r\n\x1a\n"
+            + blocco(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            + blocco(b"IDAT", zlib.compress(grezzo))
+            + blocco(b"IEND", b""))
+
+
+alto = _png(800, 2000)     # flowchart TD con molti nodi
+largo = _png(2400, 400)    # flowchart LR
+P("le dimensioni del PNG si leggono senza dipendenze", mr.dimensioni_png(alto) == (800, 2000))
+l, a = mr.misura_per_riquadro(alto, 780, 460)
+P(f"un diagramma alto NON viene schiacciato ({l:.0f}x{a:.0f} pt, era 720x240 fisso)",
+  abs(a / l - 2.5) < 0.01 and l <= 780 and a <= 460)
+l, a = mr.misura_per_riquadro(largo, 780, 460)
+P(f"un diagramma largo riempie la pagina senza deformarsi ({l:.0f}x{a:.0f} pt)",
+  abs(a / l - 400 / 2400) < 0.01 and l <= 780)
+P("un PNG illeggibile non fa saltare l'esportazione, torna la misura di riserva",
+  mr.misura_per_riquadro(b"non-e-un-png", 780, 460) == (720.0, 240.0))
+P("il servizio esterno si può vietare",
+  hasattr(mr, "_rendi_remoto") and "MERMAID_LOCAL_ONLY" in open("mermaid_render.py").read())
+
+
+# =============================================================================
+# I DIAGRAMMI COSTRUITI DAI DATI
+# (il caso segnalato: il modello ne consegna uno su quattro)
+# =============================================================================
+import re
+
+import diagrams
+
+parziale = contract.normalizza({
+    "business_processes": [{"process_name": "Fatturazione mensile", "trigger": "Job notturno (cron)",
+                            "outcome": "Fatture emesse", "involved_components": ["PKG_FATT"]}],
+    "dependencies": [{"source": "PKG_FATT", "target": "UTL_MAIL", "dependency_type": "CALL",
+                      "confidence": "HIGH"}],
+    "application_mapping": [{"source_component": "PKG_FATT", "external_system": "SAP FI",
+                             "integration_type": "FILE_EXCHANGE", "direction": "OUTBOUND"}],
+    "data_flows": [{"source": "ORDINI", "target": "FATTURE", "data_description": "Righe d'ordine"}],
+    "mermaid_process_flow": ["flowchart TD", '  A["Job"] --> B["Verifica"]', '  B --> C["Fattura"]'],
+    "mermaid_application_map": [], "mermaid_data_flow": "", "mermaid_call_graph": [],
+})
+arricchito = diagrams.arricchisci(parziale)
+P("i tre diagrammi che il modello non ha dato vengono costruiti dai dati",
+  all(arricchito[c].strip() for c in diagrams.COSTRUTTORI))
+P("il diagramma che il modello ha dato resta il suo",
+  arricchito["mermaid_process_flow"] == arricchito["_diagrammi_dal_modello"]["mermaid_process_flow"])
+P("entrambe le versioni restano disponibili per il confronto",
+  set(arricchito["_diagrammi_dai_dati"]) == set(diagrams.COSTRUTTORI))
+P("l'app dice quali diagrammi ha dovuto costruire lei",
+  sum(1 for a in arricchito["contract_warnings"] if "built from the validated data" in a) == 3)
+
+grafo = arricchito["mermaid_call_graph"]
+P("il call graph esce dalle dipendenze, con nodi validi",
+  "PKG_FATT" in grafo and "UTL_MAIL" in grafo and grafo.startswith("flowchart"))
+P("le etichette non contengono caratteri che rompono il disegno",
+  not re.search(r'\[[^\]]*[()|;][^\]]*\]', arricchito["mermaid_process_flow"]))
+P("un id di nodo non comincia mai per cifra",
+  all(not re.match(r"^\s*\d", r) for r in grafo.splitlines()[1:]))
+
+vuoto = diagrams.arricchisci(contract.normalizza({}))
+P("senza dati non si inventa un diagramma vuoto",
+  all(not vuoto[c] for c in diagrams.COSTRUTTORI)
+  and any("neither the model nor the tables" in a for a in vuoto["contract_warnings"]))
+
+grosso = contract.normalizza({"dependencies": [
+    {"source": f"MOD_{i}", "target": f"MOD_{i+1}", "dependency_type": "CALL", "confidence": "HIGH"}
+    for i in range(80)]})
+disegno = diagrams.call_graph(grosso)
+P(f"un grafo enorme viene tagliato e lo dichiara ({len(disegno.splitlines())-1} righe su 80)",
+  len(disegno.splitlines()) - 1 <= diagrams.MAX_ARCHI + 1 and "non mostrati" in disegno)
+
+P("i campi mermaid sono ora obbligatori nello schema di Gemini",
+  all(m in contract.schema_gemini()["required"] for m in contract.CAMPI_MERMAID))
+P("gli avvisi di contratto sono in inglese, come l'interfaccia",
+  all(not re.search(r"assente|mancante|scartata|risposta non", a)
+      for a in contract.normalizza({})["contract_warnings"]))
+
 print()
 print(f"{sum(ESITI)}/{len(ESITI)} casi passati")
 sys.exit(0 if all(ESITI) else 1)

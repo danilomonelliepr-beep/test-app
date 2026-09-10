@@ -61,20 +61,30 @@ def get_mermaid_image_bytes(
         graph_bytes = clean_code.encode("utf-8")
         base64_string = base64.urlsafe_b64encode(graph_bytes).decode("utf-8")
 
-        # 4. Richiesta HTTP a mermaid.ink
+        # 4. Richiesta HTTP a mermaid.ink, con un secondo tentativo.
+        # È un servizio esterno dentro la generazione di un documento: un suo
+        # singolo intoppo non deve costare al collega un PDF senza diagrammi,
+        # perché lì il diagramma manca e basta, senza spiegazioni.
         url = f"https://mermaid.ink/img/{base64_string}"
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         }
+        if len(url) > 8000:
+            print(f"[Mermaid - {diag_title}] diagramma troppo grande per l'URL, saltato")
+            return None
 
-        response = requests.get(url, headers=headers, timeout=10)
-
-        if response.status_code == 200 and len(response.content) > 100:
-            return response.content
-        else:
-            print(
-                f"[Mermaid Error - {diag_title}] HTTP {response.status_code}: {response.text[:200]}"
-            )
+        for tentativo in (1, 2):
+            try:
+                response = requests.get(url, headers=headers, timeout=20)
+            except requests.RequestException as e:
+                print(f"[Mermaid - {diag_title}] tentativo {tentativo}: {e}")
+                continue
+            if response.status_code == 200 and len(response.content) > 100:
+                return response.content
+            # 400 = il diagramma non è valido: riprovare darebbe lo stesso 400.
+            print(f"[Mermaid - {diag_title}] tentativo {tentativo}: HTTP {response.status_code}")
+            if response.status_code < 500:
+                break
 
     except Exception as e:
         print(f"[Mermaid Exception - {diag_title}] {str(e)}")
@@ -111,7 +121,20 @@ def deep_search_key(data: Any, target_keys: List[str]) -> Optional[str]:
 
 
 def extract_field(data: Dict[str, Any], keys: List[str], default: str = "N/A") -> str:
-    """Estrae un campo cercando prima al livello radice e poi in profondità."""
+    """Estrae un campo: PRIMA alla radice, e solo se lì non c'è nulla in
+    profondità.
+
+    Prima si chiamava subito `deep_search_key`, che scende ricorsivamente in
+    tutto il JSON e restituisce la prima chiave con quel nome a qualsiasi
+    profondità. Con «description» fra le chiavi cercate per l'executive
+    summary, un summary vuoto alla radice faceva finire nel PDF, come sintesi
+    esecutiva, la descrizione del primo rischio tecnico trovato. Sbagliato in
+    un modo che nessuno nota finché non lo legge il cliente."""
+    if isinstance(data, dict):
+        for k in keys:
+            v = data.get(k)
+            if v is not None and str(v).strip() and str(v).strip().upper() != "N/A":
+                return str(v).strip()
     res = deep_search_key(data, keys)
     return res if res else default
 

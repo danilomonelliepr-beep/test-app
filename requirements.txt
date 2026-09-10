@@ -1,10 +1,7 @@
 streamlit
 streamlit-mermaid
 sqlglot
-openai
-anthropic
-google-genai
 pandas
+requests
 reportlab
 python-docx
-requests

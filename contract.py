@@ -552,6 +552,43 @@ def pulisci_mermaid(valore: Any) -> str:
 
 _COPPIE = [("((", "))"), ("[[", "]]"), ("[", "]"), ("{{", "}}"), ("{", "}"), ("(", ")")]
 
+# ═══ GLI ID CHE FANNO ESPLODERE IL DISEGNO ══════════════════════════════════
+# Mermaid tiene i nodi in un oggetto JavaScript normale, usato come dizionario.
+# Un nodo che si chiama `toLocaleString` non finisce in una casella vuota: trova
+# già lì la funzione che OGNI oggetto JavaScript eredita dal prototipo. La
+# libreria crede che il nodo esista di già, prova a scrivergli sopra la
+# proprietà `.order` che serve al posizionamento, e muore con
+#     Cannot set properties of undefined (setting 'order')
+# — un messaggio che non nomina il nodo colpevole e manda a cercare ovunque
+# tranne che nel nome.
+#
+# Non è un caso di scuola: `toLocaleString`, `valueOf`, `toString`, `constructor`
+# sono metodi normalissimi in un sorgente JavaScript, quindi finiscono fra le
+# chiamate trovate dall'analisi statica e da lì diventano nodi.
+#
+# La cura è togliere la possibilità, non elencare i casi: qui si rinominano le
+# proprietà del prototipo dove compaiono come identificatori, e in `diagrams.py`
+# ogni id generato nasce già con un prefisso. Un id che comincia per `n_` non
+# può collidere con niente di JavaScript, oggi né alle prossime versioni.
+PAROLE_PERICOLOSE = {
+    "toString", "toLocaleString", "valueOf", "constructor", "prototype",
+    "hasOwnProperty", "isPrototypeOf", "propertyIsEnumerable", "__proto__",
+    "__defineGetter__", "__defineSetter__", "__lookupGetter__", "__lookupSetter__",
+    "length", "name", "caller", "arguments",
+}
+_RE_PERICOLOSE = re.compile(r"\b(" + "|".join(
+    re.escape(p) for p in sorted(PAROLE_PERICOLOSE, key=len, reverse=True)) + r")\b")
+
+
+def _sanifica_id(testo: str) -> str:
+    """Rinomina le parole pericolose FUORI dalle etichette.
+
+    Non tocca `end`, `subgraph` e le altre parole di Mermaid: quelle hanno un
+    significato nella sintassi e rinominarle romperebbe diagrammi validi. Le
+    proprietà del prototipo JavaScript invece non significano niente per
+    Mermaid, quindi rinominarle è sempre sicuro."""
+    return _RE_PERICOLOSE.sub(lambda m: "n_" + m.group(1), testo)
+
 
 def _pulisci_etichetta(dentro: str) -> str:
     t = dentro.strip()
@@ -563,22 +600,45 @@ def _pulisci_etichetta(dentro: str) -> str:
 
 
 def _etichette(riga: str) -> str:
-    fuori, i, n = [], 0, len(riga)
+    """Etichette fra virgolette e ripulite; identificatori sanificati.
+
+    Le due cose vanno fatte nello stesso passaggio perché la distinzione fra
+    «dentro un'etichetta» e «fuori» la conosce solo questo scanner: nel testo
+    visibile `toLocaleString` va lasciato com'è, come identificatore no."""
+    fuori, buffer, i, n = [], [], 0, len(riga)
+
+    def svuota():
+        if buffer:
+            fuori.append(_sanifica_id("".join(buffer)))
+            buffer.clear()
+
     while i < n:
+        # Le etichette sugli archi (`-->|testo|`) sono testo visibile come
+        # quelle dei nodi: si ripuliscono, ma non si sanificano — lì
+        # `toLocaleString` è la parola giusta da leggere.
+        if riga[i] == "|":
+            j = riga.find("|", i + 1)
+            if j != -1:
+                svuota()
+                fuori.append("|" + _pulisci_etichetta(riga[i + 1:j]) + "|")
+                i = j + 1
+                continue
         preso = False
         for apre, chiude in _COPPIE:
             if riga.startswith(apre, i):
                 j = riga.find(chiude, i + len(apre))
                 if j == -1:
                     continue
+                svuota()
                 dentro = _pulisci_etichetta(riga[i + len(apre):j])
                 fuori.append(f'{apre}"{dentro}"{chiude}')
                 i = j + len(chiude)
                 preso = True
                 break
         if not preso:
-            fuori.append(riga[i])
+            buffer.append(riga[i])
             i += 1
+    svuota()
     return "".join(fuori)
 
 

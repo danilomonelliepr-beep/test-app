@@ -559,6 +559,44 @@ AI.chiedi("x")
 P("la prova di contatto usa sempre il livello più basso, per non sforare i 5 s",
   livelli_visti[0] == "minimal")
 
+
+# =============================================================================
+# GLI ID CHE FACEVANO ESPLODERE IL DISEGNO
+# («Cannot set properties of undefined (setting 'order')»)
+# =============================================================================
+grafo_js = contract.normalizza({"dependencies": [
+    {"source": "report_logic2.js", "target": "toLocaleString",
+     "dependency_type": "PROBABLE_CALL", "confidence": "LOW"},
+    {"source": "report_logic2.js", "target": "constructor",
+     "dependency_type": "PROBABLE_CALL", "confidence": "LOW"}]})
+disegno = diagrams.call_graph(grafo_js)
+P("un nodo che si chiama come un metodo del prototipo JS ha comunque un id sicuro",
+  "n_toLocaleString" in disegno and "n_constructor" in disegno
+  and not re.search(r"(?<![\w_])toLocaleString\s*\[", disegno))
+P("il nome vero resta leggibile nell'etichetta",
+  '"toLocaleString"' in disegno and '"constructor"' in disegno)
+
+ids = re.findall(r"^\s*([A-Za-z_]\w*)", disegno, flags=re.M)[1:]
+P("tutti gli id generati nascono con il prefisso, non solo quelli sospetti",
+  ids and all(i.startswith("n_") for i in ids))
+
+modello = contract.pulisci_mermaid([
+    "flowchart LR",
+    '  toLocaleString["toLocaleString()"] -->|calls toString| valueOf["valueOf"]',
+    "  subgraph gruppo",
+    '    prototype["prototype"] --> toLocaleString',
+    "  end"])
+P("anche nel Mermaid scritto dal modello gli id pericolosi vengono rinominati",
+  modello.count("n_toLocaleString") == 2 and "n_prototype" in modello)
+P("la rinomina è coerente: i due capi dello stesso arco restano collegati",
+  "n_prototype[\"prototype\"] --> n_toLocaleString" in modello)
+P("`subgraph` ed `end` NON si toccano: lì la parola ha un significato",
+  "subgraph gruppo" in modello and re.search(r"^\s*end\s*$", modello, flags=re.M))
+P("l'etichetta sull'arco resta quella che l'autore ha scritto",
+  "|calls toString|" in modello)
+P("le frecce con lettera (--o, --x) non vengono scambiate per etichette",
+  contract.pulisci_mermaid(["flowchart TD", '  A["x"] --o B["y"]']).endswith('--o B["y"]'))
+
 print()
 print(f"{sum(ESITI)}/{len(ESITI)} casi passati")
 sys.exit(0 if all(ESITI) else 1)

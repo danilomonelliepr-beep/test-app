@@ -56,9 +56,15 @@ def _fabbrica_id() -> Callable[[str], str]:
         if chiave in mappa:
             return mappa[chiave]
         base = re.sub(r"[^A-Za-z0-9_]", "_", str(nome).strip())
-        base = re.sub(r"_+", "_", base).strip("_")[:24] or "N"
-        if base[0].isdigit():
-            base = "N" + base
+        base = re.sub(r"_+", "_", base).strip("_")[:24] or "x"
+        # PREFISSO SEMPRE, non solo quando il nome comincia per cifra.
+        # Un id nudo può coincidere con una proprietà che ogni oggetto
+        # JavaScript eredita (`toLocaleString`, `constructor`, `valueOf`): Mermaid
+        # tiene i nodi in un oggetto normale, crede che il nodo esista già e
+        # muore con «Cannot set properties of undefined (setting 'order')».
+        # Elencare le parole da evitare è una rincorsa; il prefisso chiude la
+        # famiglia intera, comprese quelle che aggiungeranno domani.
+        base = "n_" + base
         candidato, i = base, 2
         while candidato in usati:
             candidato, i = f"{base}_{i}", i + 1
@@ -84,7 +90,7 @@ def _et(testo: Any, massimo: int = MAX_ETICHETTA) -> str:
 
 def _coda(righe: List[str], scartati: int) -> List[str]:
     if scartati > 0:
-        righe.append(f'  ALTRI["… e altri {scartati} non mostrati"]')
+        righe.append(f'  n_altri["… e altri {scartati} non mostrati"]')
     return righe
 
 
@@ -130,7 +136,7 @@ def process_flow(r: Dict[str, Any]) -> str:
 # =============================================================================
 def application_map(r: Dict[str, Any]) -> str:
     idd = _fabbrica_id()
-    righe = ["flowchart LR", '  APP["Questa applicazione"]']
+    righe = ["flowchart LR", '  n_app["Questa applicazione"]']
     visti = set()
     scritti = 0
     for m in r.get("application_mapping", []):
@@ -145,11 +151,11 @@ def application_map(r: Dict[str, Any]) -> str:
         etichetta = _et(_valore(m, "integration_type") or "collegamento", 22)
         direzione = _valore(m, "direction").upper()
         if direzione == "INBOUND":
-            righe.append(f"  {ne} -->|{etichetta}| APP")
+            righe.append(f"  {ne} -->|{etichetta}| n_app")
         elif direzione == "OUTBOUND":
-            righe.append(f"  APP -->|{etichetta}| {ne}")
+            righe.append(f"  n_app -->|{etichetta}| {ne}")
         else:
-            righe.append(f"  APP <-->|{etichetta}| {ne}")
+            righe.append(f"  n_app <-->|{etichetta}| {ne}")
         scritti += 1
         if scritti >= MAX_ARCHI:
             break
@@ -167,7 +173,7 @@ def application_map(r: Dict[str, Any]) -> str:
         return ""
     for tipo, nomi in list(per_tipo.items())[:MAX_ARCHI]:
         nt = idd("I_" + tipo)
-        righe.append(f'  APP <--> {nt}["{_et(tipo, 24)} ({len(nomi)})"]')
+        righe.append(f'  n_app <--> {nt}["{_et(tipo, 24)} ({len(nomi)})"]')
     return "\n".join(righe)
 
 

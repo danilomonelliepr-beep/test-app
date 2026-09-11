@@ -1,11 +1,12 @@
 # Modifiche — Legacy Application Knowledge Extractor
 
-Versione contratto JSON: **2.0** · Collaudo: `python test_catena.py` → 64/64
+Versione contratto JSON: **2.0** · Collaudo: `python test_catena.py` → 72/72
 
 Quattro blocchi: **A** la catena modelli presa da Nuvia, **B** il contratto JSON,
 **C** difetti trovati per strada e robustezza, **D** i diagrammi (disegno locale e
 correzione dello schiacciamento nel PDF), **E** i diagrammi mancanti, **F** i limiti dichiarati nella guida,
-**G** velocità e provenienza dei diagrammi.
+**G** velocità e provenienza dei diagrammi,
+**H** gli id che facevano esplodere il disegno.
 
 ---
 
@@ -87,7 +88,7 @@ non possono divergere.
 | C12 | **Controllo dell'endpoint Azure** prima di partire, e **il deployment scritto a mano resta sempre primo in catena**. | Su Azure il nome chiamabile è il deployment, che solo chi ha creato la risorsa conosce: non è derivabile e non va scavalcato dalla scoperta. |
 | C13 | **Metriche in interfaccia**: aggiunte «Business rules» e il modello che ha risposto, i lotti eseguiti, la versione del contratto. | Serve sapere chi ha scritto il documento che si sta per firmare. |
 | C14 | **Sorgente del diagramma sempre consultabile** in un pannello, anche quando il disegno riesce. | Quando un diagramma non si disegna, il sorgente è l'unico modo per capire perché. |
-| C15 | **Collaudo automatico `test_catena.py`** — 64 casi, nessuna rete, nessuna chiave, nessun costo: scoperta, scalata, memoria, messaggi, tetti, riparazione JSON, enum, Mermaid, lotti. | Porting del collaudo di Nuvia. È il modo per cambiare una regola e sapere subito cosa si rompe. |
+| C15 | **Collaudo automatico `test_catena.py`** — 72 casi, nessuna rete, nessuna chiave, nessun costo: scoperta, scalata, memoria, messaggi, tetti, riparazione JSON, enum, Mermaid, lotti. | Porting del collaudo di Nuvia. È il modo per cambiare una regola e sapere subito cosa si rompe. |
 | C16 | **`requirements.txt`**: tolti `openai`, `anthropic`, `google-genai`; `requests` è ora una dipendenza dichiarata dell'app, non solo dell'esportatore. | Vedi A16. Tre dipendenze pesanti in meno da aggiornare e da far passare in azienda. |
 | C17 | **README vero** (prima conteneva la parola «Ciao») e questo elenco. | — |
 
@@ -167,6 +168,39 @@ Due segnalazioni dal campo: «ci mette minuti anziché secondi» e un avviso su
 | G7 | **Tempo visibile**: secondi trascorsi nella barra di avanzamento, durata totale e livello di ragionamento usato nella scheda Overview. | Un'analisi vera dura minuti. Una barra ferma senza numeri sembra bloccata — ed è così che nasce «ci mette troppo». |
 | G8 | **«Diagramma costruito dai dati» non è più un avviso di contratto.** La provenienza si dice accanto al disegno, nella scheda Diagrams; nel pannello degli avvisi resta solo il caso vero: nessun diagramma disponibile da nessuna delle due parti. | Nel pannello «what the app had to fix» sembrava un errore, e infatti è stato segnalato come tale. Costruire il diagramma dai dati è il funzionamento previsto, non un guasto. |
 | G9 | **Sei casi in più nel collaudo**: la scala che sale, il minimo ricordato, la prova che resta al livello più basso, la provenienza registrata fuori dagli avvisi. | — |
+
+---
+
+## H · «Cannot set properties of undefined (setting 'order')»
+
+Segnalazione dal campo: il file `.mmd` esportato, aperto su mermaid.live, muore
+con quell'errore. Il messaggio non nomina il nodo colpevole, e manda a cercare
+ovunque tranne che nel posto giusto.
+
+**La causa.** Mermaid tiene i nodi del grafo in un oggetto JavaScript normale,
+usato come dizionario. Un nodo che si chiama `toLocaleString` non finisce in una
+casella vuota: trova già lì la funzione che *ogni* oggetto JavaScript eredita dal
+prototipo. La libreria conclude che il nodo esiste di già, prova a scrivergli
+sopra la proprietà `.order` che serve al posizionamento, e muore.
+
+Non è un caso di scuola. `toLocaleString`, `valueOf`, `toString`, `constructor`
+sono metodi normalissimi in un sorgente JavaScript: l'analisi statica li trova
+come chiamate, diventano righe di dipendenza, e da lì nodi del call graph.
+
+| # | Modifica | Perché |
+|---|---|---|
+| H1 | **Ogni id generato nasce con il prefisso `n_`**, non solo quelli che cominciano per cifra. L'etichetta visibile resta il nome vero. | Elencare le parole da evitare è una rincorsa: un id che comincia per `n_` non può collidere con niente di JavaScript, oggi né alle prossime versioni. Il nodo diventa `n_toLocaleString["toLocaleString"]`: illeggibile per la macchina, identico per chi guarda. |
+| H2 | **Anche il Mermaid scritto dal modello viene sanificato**: le proprietà del prototipo (`toString`, `valueOf`, `constructor`, `prototype`, `hasOwnProperty`, `__proto__`…) vengono rinominate dove compaiono come identificatori, in modo coerente su tutto il diagramma. | Il prefisso copre i disegni che costruiamo noi; questo copre l'altra metà. Erano due strade verso lo stesso renderer e andavano chiuse tutte e due. |
+| H3 | **`end`, `subgraph`, `graph` NON vengono toccati.** | Lì la parola ha un significato nella sintassi di Mermaid: rinominarla romperebbe diagrammi validi. Le proprietà del prototipo invece per Mermaid non significano niente, quindi rinominarle è sempre sicuro. |
+| H4 | **Le etichette sugli archi (`-->\|testo\|`) sono protette** come quelle dei nodi: si ripuliscono, non si sanificano. | Nel testo che si legge `toLocaleString` è la parola giusta. |
+| H5 | **Otto casi in più nel collaudo**, compresi la rinomina coerente ai due capi di un arco, `subgraph`/`end` intatti e le frecce `--o` / `--x` che non devono essere scambiate per etichette. | — |
+
+> La diagnosi che aveva trovato Danilo era giusta sulla causa. La soluzione
+> proposta — aggiungere un prefisso e tenere una lista di parole da evitare —
+> era però metà del lavoro: copriva i diagrammi generati dal codice ma non
+> quelli scritti dal modello, e una lista di parole va aggiornata ogni volta
+> che JavaScript ne aggiunge una. Qui il prefisso è sistematico e la lista
+> serve solo per il testo che non possiamo prefissare.
 
 ---
 
@@ -295,6 +329,39 @@ Due segnalazioni dal campo: «ci mette minuti anziché secondi» e un avviso su
 | G7 | **Tempo visibile**: secondi trascorsi nella barra di avanzamento, durata totale e livello di ragionamento usato nella scheda Overview. | Un'analisi vera dura minuti. Una barra ferma senza numeri sembra bloccata — ed è così che nasce «ci mette troppo». |
 | G8 | **«Diagramma costruito dai dati» non è più un avviso di contratto.** La provenienza si dice accanto al disegno, nella scheda Diagrams; nel pannello degli avvisi resta solo il caso vero: nessun diagramma disponibile da nessuna delle due parti. | Nel pannello «what the app had to fix» sembrava un errore, e infatti è stato segnalato come tale. Costruire il diagramma dai dati è il funzionamento previsto, non un guasto. |
 | G9 | **Sei casi in più nel collaudo**: la scala che sale, il minimo ricordato, la prova che resta al livello più basso, la provenienza registrata fuori dagli avvisi. | — |
+
+---
+
+## H · «Cannot set properties of undefined (setting 'order')»
+
+Segnalazione dal campo: il file `.mmd` esportato, aperto su mermaid.live, muore
+con quell'errore. Il messaggio non nomina il nodo colpevole, e manda a cercare
+ovunque tranne che nel posto giusto.
+
+**La causa.** Mermaid tiene i nodi del grafo in un oggetto JavaScript normale,
+usato come dizionario. Un nodo che si chiama `toLocaleString` non finisce in una
+casella vuota: trova già lì la funzione che *ogni* oggetto JavaScript eredita dal
+prototipo. La libreria conclude che il nodo esiste di già, prova a scrivergli
+sopra la proprietà `.order` che serve al posizionamento, e muore.
+
+Non è un caso di scuola. `toLocaleString`, `valueOf`, `toString`, `constructor`
+sono metodi normalissimi in un sorgente JavaScript: l'analisi statica li trova
+come chiamate, diventano righe di dipendenza, e da lì nodi del call graph.
+
+| # | Modifica | Perché |
+|---|---|---|
+| H1 | **Ogni id generato nasce con il prefisso `n_`**, non solo quelli che cominciano per cifra. L'etichetta visibile resta il nome vero. | Elencare le parole da evitare è una rincorsa: un id che comincia per `n_` non può collidere con niente di JavaScript, oggi né alle prossime versioni. Il nodo diventa `n_toLocaleString["toLocaleString"]`: illeggibile per la macchina, identico per chi guarda. |
+| H2 | **Anche il Mermaid scritto dal modello viene sanificato**: le proprietà del prototipo (`toString`, `valueOf`, `constructor`, `prototype`, `hasOwnProperty`, `__proto__`…) vengono rinominate dove compaiono come identificatori, in modo coerente su tutto il diagramma. | Il prefisso copre i disegni che costruiamo noi; questo copre l'altra metà. Erano due strade verso lo stesso renderer e andavano chiuse tutte e due. |
+| H3 | **`end`, `subgraph`, `graph` NON vengono toccati.** | Lì la parola ha un significato nella sintassi di Mermaid: rinominarla romperebbe diagrammi validi. Le proprietà del prototipo invece per Mermaid non significano niente, quindi rinominarle è sempre sicuro. |
+| H4 | **Le etichette sugli archi (`-->\|testo\|`) sono protette** come quelle dei nodi: si ripuliscono, non si sanificano. | Nel testo che si legge `toLocaleString` è la parola giusta. |
+| H5 | **Otto casi in più nel collaudo**, compresi la rinomina coerente ai due capi di un arco, `subgraph`/`end` intatti e le frecce `--o` / `--x` che non devono essere scambiate per etichette. | — |
+
+> La diagnosi che aveva trovato Danilo era giusta sulla causa. La soluzione
+> proposta — aggiungere un prefisso e tenere una lista di parole da evitare —
+> era però metà del lavoro: copriva i diagrammi generati dal codice ma non
+> quelli scritti dal modello, e una lista di parole va aggiornata ogni volta
+> che JavaScript ne aggiunge una. Qui il prefisso è sistematico e la lista
+> serve solo per il testo che non possiamo prefissare.
 
 ---
 

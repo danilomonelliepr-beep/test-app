@@ -79,7 +79,7 @@ La scheda *Downloads* dice sempre quale dei due sta per succedere.
 ## Collaudo
 
 ```bash
-python test_catena.py     # 64 casi, nessuna rete, nessuna chiave, nessun costo
+python test_catena.py     # 72 casi, nessuna rete, nessuna chiave, nessun costo
 ```
 
 ## Documentazione

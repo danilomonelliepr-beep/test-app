@@ -166,7 +166,7 @@ database, nessuno stato sul server oltre alla sessione.
 | `diagrams.py` | I quattro diagrammi ricavati dai dati strutturati |
 | `mermaid_render.py` | Mermaid → PNG, in locale (mmdc) o come ricaduta remota |
 | `exporter.py` | PDF (ReportLab) e Word (python-docx) |
-| `test_catena.py` | 64 casi, senza rete, senza chiavi, senza costi |
+| `test_catena.py` | 72 casi, senza rete, senza chiavi, senza costi |
 | `guida_pdf.py` | Rigenera questo documento in PDF (servizio, non serve all'app) |
 
 Le dipendenze fra moduli vanno in una direzione sola: `app` → tutti;
@@ -357,7 +357,11 @@ visibile in interfaccia: chi valida deve sapere quanto fidarsi.
 La pulizia Mermaid merita una riga: le etichette vengono messe fra virgolette e
 ripulite da `( ) [ ] { } " ; |` con uno scanner scritto a mano, non con una
 regex, perché le forme si annidano (`A[Ordine (nuovo)]`) e una regex prende la
-parentesi interna lasciando fuori quella che conta.
+parentesi interna lasciando fuori quella che conta. Lo stesso scanner sa
+distinguere il testo visibile dagli identificatori, e nei secondi rinomina le
+proprietà del prototipo JavaScript (`toString`, `valueOf`, `constructor`…) che
+altrimenti fanno morire il renderer. `end` e `subgraph` restano intatti: lì la
+parola ha un significato.
 
 **Consolidamento.** Con più di un lotto parte una chiamata finale che riceve
 **solo l'inventario**, senza codice: produce una sintesi unica dell'applicazione
@@ -390,8 +394,11 @@ dello SME. La provenienza si scrive accanto al disegno, **non** fra gli avvisi
 di contratto: costruire il diagramma dai dati è il funzionamento previsto, e
 nel pannello degli avvisi sembrava un guasto.
 
-Garanzie per costruzione: id ripuliti, unici, mai a cominciare per cifra;
-etichette senza i caratteri che rompono mermaid; tetto di 40 archi con
+Garanzie per costruzione: id unici e sempre preceduti da `n_` — un id nudo può
+coincidere con una proprietà che ogni oggetto JavaScript eredita
+(`toLocaleString`, `constructor`), e Mermaid, che tiene i nodi in un oggetto
+normale, crede che il nodo esista già e muore con «Cannot set properties of
+undefined (setting 'order')»; etichette senza i caratteri che rompono mermaid; tetto di 40 archi con
 dichiarazione di quanti restano fuori; quando si taglia, escono per prime le
 `PROBABLE_CALL` e le confidenze basse.
 
@@ -424,7 +431,7 @@ Streamlit riesegue lo script intero a ogni interazione. Di conseguenza:
 
 ## Collaudo
 
-`python test_catena.py` — 64 casi, nessuna rete, nessuna chiave, nessun costo.
+`python test_catena.py` — 72 casi, nessuna rete, nessuna chiave, nessun costo.
 Il provider è finto: si dichiara quali modelli rispondono e come, e si osserva il
 comportamento. Copre scoperta e ordinamento, scalata, riprova selettiva, memoria,
 messaggi nelle due lingue, tetti temporali, adattamento dei parametri,

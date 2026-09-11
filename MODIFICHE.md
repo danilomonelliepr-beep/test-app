@@ -6,7 +6,8 @@ Quattro blocchi: **A** la catena modelli presa da Nuvia, **B** il contratto JSON
 **C** difetti trovati per strada e robustezza, **D** i diagrammi (disegno locale e
 correzione dello schiacciamento nel PDF), **E** i diagrammi mancanti, **F** i limiti dichiarati nella guida,
 **G** velocità e provenienza dei diagrammi,
-**H** gli id che facevano esplodere il disegno.
+**H** gli id che facevano esplodere il disegno,
+**I** interfaccia e accessibilità.
 
 ---
 
@@ -204,6 +205,62 @@ come chiamate, diventano righe di dipendenza, e da lì nodi del call graph.
 
 ---
 
+## I · Interfaccia e accessibilità
+
+L'interfaccia era quella di serie di Streamlit: nove schede tutte uguali,
+tabelle senza intestazioni leggibili, nessuna idea di dove si fosse nel lavoro.
+Il mestiere di questa applicazione però non è mostrare dati, è **far giudicare a
+una persona delle righe prodotte da una macchina**: l'interfaccia deve dire
+prima di tutto da dove viene ogni riga e quanto è solida.
+
+### Il sistema visivo
+
+| # | Modifica | Perché |
+|---|---|---|
+| I1 | **Nuovo `ui.py`**: token di colore e spaziatura, tema CSS, componenti (testata, cifre, intestazioni di sezione, marcatori, stato vuoto) e `.streamlit/config.toml` con gli stessi valori. | Un posto solo per il colore e la spaziatura. Se cambia lì, cambia ovunque. |
+| I2 | **Carattere: IBM Plex Sans e IBM Plex Mono.** Il monospazio è riservato a ciò che è letterale — nomi di componenti, file, frammenti, numeri. | Non è un vezzo: questa applicazione documenta COBOL, RPG e PL/SQL, e Plex è il carattere dell'azienda le cui macchine fanno girare quella roba. E la differenza fra «testo scritto da qualcuno» e «stringa presa dal sorgente» si vede senza doverla leggere. |
+| I3 | **Colore: inchiostro blu-nero su carta grigio-fredda, accento verde-petrolio.** L'accento dice solo dove si può agire, mai cosa significa. | Il significato sta nella scala di gravità, che è l'unica cosa calda della pagina: così l'occhio ci va subito, invece di doverla cercare in mezzo ad altri colori. |
+| I4 | **I marcatori di provenienza**, coerenti ovunque: ■ Parser, □ Model, ●●● / ●●○ / ●○○ per la confidenza, ▲ ◆ • per la gravità. Con una legenda nella scheda Summary. | È l'unica cosa su cui l'interfaccia si permette di essere vistosa, ed è anche l'unica che porta informazione: quadrato pieno = fatto che il parser non può sbagliare, quadrato vuoto = lettura del modello, con la sua confidenza. |
+| I5 | **Mai il colore da solo.** Ogni marcatore porta forma + parola + colore; gli enum nelle tabelle sono menù a tendina con la parola per esteso. | Un daltonico e uno schermo in bianco e nero devono leggere la stessa cosa. |
+| I6 | **Nessuna animazione d'ingresso.** Le uniche transizioni rispondono a un gesto, e si spengono con `prefers-reduced-motion`. | Le entrate in dissolvenza su ogni sezione sono il tic dell'interfaccia generata, e qui si sta lavorando, non guardando una presentazione. |
+
+### Il lavoro di chi valida
+
+| # | Modifica | Perché |
+|---|---|---|
+| I7 | **Quante righe restano da guardare**, per sezione (barra) e in cima alla pagina (cifra «Rows checked»). | È dodici tabelle di lavoro: senza un avanzamento non si sa se manca un'ora o tre giorni, e non si sa dove riprendere dopo una pausa. |
+| I8 | **Ricerca dentro la sezione** e filtro «solo le righe ancora da controllare». Con un filtro attivo le righe non si aggiungono né si tolgono, e la pagina lo dice. | Il vincolo non è pigrizia: le modifiche tornano al loro posto per posizione, e questo funziona solo se il numero di righe non cambia sotto le mani. Meglio un limite dichiarato di una perdita silenziosa. |
+| I9 | **Gli enum sono menù a tendina**, non testo libero. | Finché `severity` si scriveva a mano, chi validava poteva metterci «molto alto» e il filtro per gravità smetteva di funzionare senza dirlo a nessuno. |
+| I10 | **Ogni colonna porta la propria spiegazione** (in `help`), presa dal contratto — la stessa frase che legge il modello. | Non possono divergere, e nessuno deve indovinare cosa voglia dire `source_component`. |
+| I11 | **Intestazioni di colonna leggibili** («File», «Kind», «Why it matters») al posto dei nomi di campo. | — |
+| I12 | **Cifre di sintesi in cima**: file letti, regole di business (in rilievo), componenti, rischi gravi, righe controllate. | Le regole di business sono la sezione che ripaga l'esecuzione: è giusto che sia l'unica evidenziata. |
+| I13 | **Stato vuoto che spiega e invita**, con i tre passi numerati. | Una schermata vuota è un invito ad agire, non un'alzata di spalle. I numeri ci stanno perché questa è una sequenza vera: senza chiave non si analizza, senza sorgenti non si esporta. |
+| I14 | **Barra laterale in tre tappe** (Model · Source code · Run), con la verifica della connessione raccolta in un pannello. | Prima era un elenco piatto di controlli in cui non si capiva cosa fosse obbligatorio e in che ordine. |
+| I15 | **Schede rinominate e raggruppate**: Summary · Business · Architecture · Data · Risks · Diagrams · For the expert · Parser evidence · Export. | «SME Validation» e «Static Evidence» sono nomi del sistema, non di chi lavora. |
+| I16 | **Export come tre schede con una riga di spiegazione** l'una, invece di tre bottoni nudi. | Chi esporta deve sapere quale dei tre gli serve prima di premere. |
+| I17 | **Testi riscritti**: verbi attivi, frasi in minuscolo, niente scuse negli errori. «The API key is missing. Add it under step 1 and run again.» invece di «Missing API Key». | Un errore dice cosa è successo e come si rimedia. |
+
+### Accessibilità
+
+| # | Modifica | Perché |
+|---|---|---|
+| I18 | **Contrasto**: inchiostro su carta 13:1, accento su bianco 5,6:1, ogni testo di stato oltre 4,5:1 sul proprio fondo. | AA superato ovunque, AAA sul testo corrente. |
+| I19 | **Fuoco da tastiera sempre visibile**, contorno di 3px con scarto, su bottoni, campi, schede e caselle. | Si può percorrere tutta l'applicazione senza mouse e sapere sempre dove si è. |
+| I20 | **Bersagli da 42px** su bottoni, schede ed espansori. | Sotto i 40px si sbaglia, col mouse e soprattutto col dito. |
+| I21 | **Nessuna etichetta nascosta**: ogni controllo ha la sua, visibile, più un `help`. La colonna di spunta si chiama «Checked», non «✓». | Un lettore di schermo legge «Checked», non «segno di spunta». |
+| I22 | **`prefers-reduced-motion` e `prefers-contrast: more`** rispettati (nel secondo caso bordi e testi secondari si scuriscono). | Sono preferenze di sistema che qualcuno ha impostato per un motivo. |
+| I23 | **Adattamento a schermo stretto** sotto gli 880px. | — |
+| I24 | **Tema scuro pronto** in `.streamlit/config.toml`, commentato. | — |
+
+### Manutenzione
+
+| # | Modifica | Perché |
+|---|---|---|
+| I25 | **I componenti nuovi verificano che Streamlit li sappia fare** (`segmented_control`, `toggle`, `container(border=…)`, `toast`): se manca, si ripiega su un controllo equivalente. | Un'installazione più vecchia perde un bordo, non una funzione. |
+| I26 | **`use_container_width` sostituito con `width="stretch"`**, deciso guardando la firma vera della funzione invece del numero di versione. | Il vecchio nome è in via di rimozione e riempiva la console di avvisi. Guardare la firma funziona anche sulle versioni in mezzo. |
+
+---
+
 ## Cosa NON è stato cambiato
 
 - La struttura di `exporter.py` (PDF e Word): due sole correzioni chirurgiche
@@ -362,6 +419,62 @@ come chiamate, diventano righe di dipendenza, e da lì nodi del call graph.
 > quelli scritti dal modello, e una lista di parole va aggiornata ogni volta
 > che JavaScript ne aggiunge una. Qui il prefisso è sistematico e la lista
 > serve solo per il testo che non possiamo prefissare.
+
+---
+
+## I · Interfaccia e accessibilità
+
+L'interfaccia era quella di serie di Streamlit: nove schede tutte uguali,
+tabelle senza intestazioni leggibili, nessuna idea di dove si fosse nel lavoro.
+Il mestiere di questa applicazione però non è mostrare dati, è **far giudicare a
+una persona delle righe prodotte da una macchina**: l'interfaccia deve dire
+prima di tutto da dove viene ogni riga e quanto è solida.
+
+### Il sistema visivo
+
+| # | Modifica | Perché |
+|---|---|---|
+| I1 | **Nuovo `ui.py`**: token di colore e spaziatura, tema CSS, componenti (testata, cifre, intestazioni di sezione, marcatori, stato vuoto) e `.streamlit/config.toml` con gli stessi valori. | Un posto solo per il colore e la spaziatura. Se cambia lì, cambia ovunque. |
+| I2 | **Carattere: IBM Plex Sans e IBM Plex Mono.** Il monospazio è riservato a ciò che è letterale — nomi di componenti, file, frammenti, numeri. | Non è un vezzo: questa applicazione documenta COBOL, RPG e PL/SQL, e Plex è il carattere dell'azienda le cui macchine fanno girare quella roba. E la differenza fra «testo scritto da qualcuno» e «stringa presa dal sorgente» si vede senza doverla leggere. |
+| I3 | **Colore: inchiostro blu-nero su carta grigio-fredda, accento verde-petrolio.** L'accento dice solo dove si può agire, mai cosa significa. | Il significato sta nella scala di gravità, che è l'unica cosa calda della pagina: così l'occhio ci va subito, invece di doverla cercare in mezzo ad altri colori. |
+| I4 | **I marcatori di provenienza**, coerenti ovunque: ■ Parser, □ Model, ●●● / ●●○ / ●○○ per la confidenza, ▲ ◆ • per la gravità. Con una legenda nella scheda Summary. | È l'unica cosa su cui l'interfaccia si permette di essere vistosa, ed è anche l'unica che porta informazione: quadrato pieno = fatto che il parser non può sbagliare, quadrato vuoto = lettura del modello, con la sua confidenza. |
+| I5 | **Mai il colore da solo.** Ogni marcatore porta forma + parola + colore; gli enum nelle tabelle sono menù a tendina con la parola per esteso. | Un daltonico e uno schermo in bianco e nero devono leggere la stessa cosa. |
+| I6 | **Nessuna animazione d'ingresso.** Le uniche transizioni rispondono a un gesto, e si spengono con `prefers-reduced-motion`. | Le entrate in dissolvenza su ogni sezione sono il tic dell'interfaccia generata, e qui si sta lavorando, non guardando una presentazione. |
+
+### Il lavoro di chi valida
+
+| # | Modifica | Perché |
+|---|---|---|
+| I7 | **Quante righe restano da guardare**, per sezione (barra) e in cima alla pagina (cifra «Rows checked»). | È dodici tabelle di lavoro: senza un avanzamento non si sa se manca un'ora o tre giorni, e non si sa dove riprendere dopo una pausa. |
+| I8 | **Ricerca dentro la sezione** e filtro «solo le righe ancora da controllare». Con un filtro attivo le righe non si aggiungono né si tolgono, e la pagina lo dice. | Il vincolo non è pigrizia: le modifiche tornano al loro posto per posizione, e questo funziona solo se il numero di righe non cambia sotto le mani. Meglio un limite dichiarato di una perdita silenziosa. |
+| I9 | **Gli enum sono menù a tendina**, non testo libero. | Finché `severity` si scriveva a mano, chi validava poteva metterci «molto alto» e il filtro per gravità smetteva di funzionare senza dirlo a nessuno. |
+| I10 | **Ogni colonna porta la propria spiegazione** (in `help`), presa dal contratto — la stessa frase che legge il modello. | Non possono divergere, e nessuno deve indovinare cosa voglia dire `source_component`. |
+| I11 | **Intestazioni di colonna leggibili** («File», «Kind», «Why it matters») al posto dei nomi di campo. | — |
+| I12 | **Cifre di sintesi in cima**: file letti, regole di business (in rilievo), componenti, rischi gravi, righe controllate. | Le regole di business sono la sezione che ripaga l'esecuzione: è giusto che sia l'unica evidenziata. |
+| I13 | **Stato vuoto che spiega e invita**, con i tre passi numerati. | Una schermata vuota è un invito ad agire, non un'alzata di spalle. I numeri ci stanno perché questa è una sequenza vera: senza chiave non si analizza, senza sorgenti non si esporta. |
+| I14 | **Barra laterale in tre tappe** (Model · Source code · Run), con la verifica della connessione raccolta in un pannello. | Prima era un elenco piatto di controlli in cui non si capiva cosa fosse obbligatorio e in che ordine. |
+| I15 | **Schede rinominate e raggruppate**: Summary · Business · Architecture · Data · Risks · Diagrams · For the expert · Parser evidence · Export. | «SME Validation» e «Static Evidence» sono nomi del sistema, non di chi lavora. |
+| I16 | **Export come tre schede con una riga di spiegazione** l'una, invece di tre bottoni nudi. | Chi esporta deve sapere quale dei tre gli serve prima di premere. |
+| I17 | **Testi riscritti**: verbi attivi, frasi in minuscolo, niente scuse negli errori. «The API key is missing. Add it under step 1 and run again.» invece di «Missing API Key». | Un errore dice cosa è successo e come si rimedia. |
+
+### Accessibilità
+
+| # | Modifica | Perché |
+|---|---|---|
+| I18 | **Contrasto**: inchiostro su carta 13:1, accento su bianco 5,6:1, ogni testo di stato oltre 4,5:1 sul proprio fondo. | AA superato ovunque, AAA sul testo corrente. |
+| I19 | **Fuoco da tastiera sempre visibile**, contorno di 3px con scarto, su bottoni, campi, schede e caselle. | Si può percorrere tutta l'applicazione senza mouse e sapere sempre dove si è. |
+| I20 | **Bersagli da 42px** su bottoni, schede ed espansori. | Sotto i 40px si sbaglia, col mouse e soprattutto col dito. |
+| I21 | **Nessuna etichetta nascosta**: ogni controllo ha la sua, visibile, più un `help`. La colonna di spunta si chiama «Checked», non «✓». | Un lettore di schermo legge «Checked», non «segno di spunta». |
+| I22 | **`prefers-reduced-motion` e `prefers-contrast: more`** rispettati (nel secondo caso bordi e testi secondari si scuriscono). | Sono preferenze di sistema che qualcuno ha impostato per un motivo. |
+| I23 | **Adattamento a schermo stretto** sotto gli 880px. | — |
+| I24 | **Tema scuro pronto** in `.streamlit/config.toml`, commentato. | — |
+
+### Manutenzione
+
+| # | Modifica | Perché |
+|---|---|---|
+| I25 | **I componenti nuovi verificano che Streamlit li sappia fare** (`segmented_control`, `toggle`, `container(border=…)`, `toast`): se manca, si ripiega su un controllo equivalente. | Un'installazione più vecchia perde un bordo, non una funzione. |
+| I26 | **`use_container_width` sostituito con `width="stretch"`**, deciso guardando la firma vera della funzione invece del numero di versione. | Il vecchio nome è in via di rimozione e riempiva la console di avvisi. Guardare la firma funziona anche sulle versioni in mezzo. |
 
 ---
 

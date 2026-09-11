@@ -58,6 +58,16 @@ Questo è il cuore di tutto: un'informazione che viene dal lettore meccanico ha
 un valore diverso da una che viene dal modello, e nel documento finale la
 differenza resta visibile. Non si mescolano i fatti con le interpretazioni.
 
+## Come si legge quello che trova
+
+Ogni riga porta scritto da dove viene e quanto è solida, e lo dice con una forma
+oltre che con un colore: un quadrato pieno è un fatto del lettore meccanico, che
+su quello non può sbagliare; un quadrato vuoto è la lettura del modello, con
+accanto tre pallini che dicono quanto ci crede. La gravità dei rischi è l'unica
+cosa calda della pagina, così l'occhio ci va per primo. Niente è affidato al solo
+colore: chi non distingue il rosso dal verde, e chi stampa in bianco e nero,
+legge le stesse identiche informazioni.
+
 ## Il terzo lettore: la persona
 
 Il documento non è finito quando l'applicazione ha finito. Ogni cosa trovata
@@ -155,7 +165,7 @@ perderebbe la giornata. Dice che la chiave è sbagliata.
 
 ## Architettura
 
-Applicazione Streamlit, sette moduli Python più uno script di servizio, nessun
+Applicazione Streamlit, otto moduli Python più uno script di servizio, nessun
 database, nessuno stato sul server oltre alla sessione.
 
 | File | Responsabilità |
@@ -168,6 +178,7 @@ database, nessuno stato sul server oltre alla sessione.
 | `exporter.py` | PDF (ReportLab) e Word (python-docx) |
 | `test_catena.py` | 72 casi, senza rete, senza chiavi, senza costi |
 | `guida_pdf.py` | Rigenera questo documento in PDF (servizio, non serve all'app) |
+| `.streamlit/config.toml` | Tema di Streamlit, con gli stessi colori di `ui.py` |
 
 Le dipendenze fra moduli vanno in una direzione sola: `app` → tutti;
 `exporter` → `mermaid_render`; `diagrams` → `contract`. Nessun ciclo, e

@@ -14,6 +14,7 @@ from streamlit_mermaid import st_mermaid
 import contract
 import diagrams
 import mermaid_render
+import ui
 from exporter import generate_docx_report, generate_pdf_report
 from model_chain import CatenaModelli, NessunModello
 
@@ -23,8 +24,10 @@ from model_chain import CatenaModelli, NessunModello
 st.set_page_config(
     page_title="Legacy Application Knowledge Extractor",
     page_icon="🧭",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
+ui.applica_tema()
 
 # =============================================================================
 # 2. CONSTANTS
@@ -685,69 +688,165 @@ def consolida(catena, provider, risultato, lotti):
     return contract.applica_consolidamento(risultato, grezzo)
 
 # =============================================================================
-# 8. RENDERING FUNCTIONS (SME REVIEW WORKFLOW)
 # =============================================================================
-def render_dataframe_section(title, records, empty_message, key, help_text=""):
-    st.markdown(f"#### {title}")
-    if help_text:
-        st.caption(help_text)
-    if not records:
-        st.info(empty_message)
-        return records
-    df = pd.DataFrame(records)
+# 8. LE TABELLE DI VALIDAZIONE
+# È qui che si consuma il tempo di chi usa l'applicazione: dodici tabelle da
+# leggere riga per riga. Tre cose le rendono sopportabili, e sono tutte qui
+# sotto: sapere quante righe restano da guardare, poter cercare dentro una
+# sezione, e non dover scrivere a mano i valori che sono a scelta fissa.
+# =============================================================================
+SEZIONI = {
+    "business_processes": ("Business processes",
+        "What the application does, reconstructed from the code."),
+    "business_rules": ("Business rules",
+        "The decisions encoded in the code. Usually the most valuable section — and the one to check hardest."),
+    "components": ("Components",
+        "Procedures, functions, packages and modules found in the source."),
+    "dependencies": ("Dependencies",
+        "What calls, imports or reads what. Rows still marked PROBABLE_CALL point outside the submitted code."),
+    "interfaces": ("Interfaces",
+        "Where this application touches the outside world."),
+    "data_objects": ("Data objects",
+        "Tables, views, files and queues the code reads or writes."),
+    "data_flows": ("Data flows",
+        "Where data comes from, where it goes, and what changes on the way."),
+    "technical_risks": ("Technical risks",
+        "What a migration team should know before touching this."),
+    "impact_analysis": ("Impact analysis",
+        "What breaks if you change what."),
+    "application_mapping": ("Application map",
+        "Links to the other systems in the perimeter."),
+    "validation_questions": ("Questions for the expert",
+        "What the code cannot answer. Take these to the business, not to the source."),
+    "assumptions": ("Assumptions",
+        "What the analysis took for granted to reach its conclusions."),
+}
+
+ETICHETTE = {
+    "process_id": "ID", "rule_id": "ID", "flow_id": "ID", "risk_id": "ID",
+    "impact_id": "ID", "mapping_id": "ID", "question_id": "ID", "assumption_id": "ID",
+    "source_file": "File", "source_component": "In", "component_name": "Name",
+    "component_type": "Kind", "dependency_type": "Kind", "interface_type": "Kind",
+    "object_name": "Object", "object_type": "Kind", "external_system": "System",
+    "integration_type": "Via", "affected_component": "Affects",
+    "business_impact": "Why it matters", "why_it_matters": "Why it matters",
+    "risk_if_wrong": "If wrong", "line_number": "Line", "related_ids": "Related",
+    "addressed_to": "Ask", "data_description": "Data", "impact_description": "Effect",
+    "change_scenario": "Change", "involved_components": "Components",
+    "affected_components": "Components", "source": "Found by",
+}
+# I campi che contengono prosa: vogliono spazio, gli altri no.
+LARGHI = {"description", "evidence", "condition", "action", "impact", "recommendation",
+          "impact_description", "business_impact", "question", "why_it_matters",
+          "assumption", "purpose", "data_description", "transformation", "mitigation",
+          "basis", "risk_if_wrong", "change_scenario", "outcome", "trigger"}
+
+
+def _etichetta(campo):
+    return ETICHETTE.get(campo) or campo.replace("_", " ").capitalize()
+
+
+def _config_colonne(nome):
+    """Le colonne, descritte una per una.
+
+    Due cose che l'interfaccia guadagna qui: ogni colonna porta con sé la
+    propria spiegazione (la stessa che il contratto dà al modello, quindi non
+    possono divergere), e i campi a scelta fissa diventano menù a tendina. Il
+    secondo punto non è estetica: finché `severity` era testo libero, chi
+    validava poteva scriverci «molto alto» e il filtro per gravità smetteva di
+    funzionare senza dire niente a nessuno."""
+    spec = contract.CAMPI[nome]
+    # L'intestazione è una parola, non solo un segno di spunta: un lettore di
+    # schermo legge «Checked», non «segno di spunta».
+    cfg = {"sme_approved": st.column_config.CheckboxColumn(
+        "Checked", help="Tick when you have checked this row against the code or with the business.",
+        default=False, width="small")}
+    for campo, (descrizione, valori) in spec["campi"].items():
+        if valori:
+            cfg[campo] = st.column_config.SelectboxColumn(
+                _etichetta(campo), options=list(valori), help=descrizione or None, width="small")
+        else:
+            larghezza = "large" if campo in LARGHI else (
+                "small" if campo.endswith("_id") or campo == "line_number" else "medium")
+            cfg[campo] = st.column_config.TextColumn(
+                _etichetta(campo), help=descrizione or None, width=larghezza)
+    return cfg
+
+
+def _ordina_colonne(df, nome):
+    spec = contract.CAMPI[nome]
     if "sme_approved" not in df.columns:
         df.insert(0, "sme_approved", False)
-    else:
-        df.insert(0, "sme_approved", df.pop("sme_approved").fillna(False).astype(bool))
-    # Le colonne di servizio non si mostrano: confondono chi valida.
-    df = df[[c for c in df.columns if not str(c).startswith("_")]]
-    edited_df = st.data_editor(
-        df,
-        use_container_width=True,
-        hide_index=True,
-        num_rows="dynamic",
-        key=key,
-        column_config={"sme_approved": st.column_config.CheckboxColumn(
-            "✔", help="Tick when a domain expert has confirmed this row.", default=False)},
-    )
-    return edited_df.to_dict("records")
+    df["sme_approved"] = df["sme_approved"].fillna(False).astype(bool)
+    previste = ["sme_approved"] + list(spec["campi"].keys())
+    extra = [c for c in df.columns if c not in previste and not str(c).startswith("_")]
+    return df.reindex(columns=previste + extra)
 
-def render_contract_section(nome, result, key):
-    return render_dataframe_section(
-        _titolo_en(nome), result.get(nome, []),
-        "Nothing found for this section.", key,
-    )
 
-_TITOLI_EN = {
-    "business_processes": "Business Processes",
-    "business_rules": "Business Rules",
-    "components": "Components",
-    "dependencies": "Dependencies",
-    "interfaces": "Interfaces",
-    "data_objects": "Data Objects",
-    "data_flows": "Data Flows",
-    "technical_risks": "Technical Risks",
-    "impact_analysis": "Impact Analysis",
-    "application_mapping": "Application Mapping",
-    "validation_questions": "Questions for the SME",
-    "assumptions": "Assumptions",
-}
-def _titolo_en(nome):
-    return _TITOLI_EN.get(nome, nome.replace("_", " ").title())
+def render_tabella(nome, risultato, chiave):
+    spec = contract.CAMPI[nome]
+    titolo, spiegazione = SEZIONI[nome]
+    righe = list(risultato.get(nome, []) or [])
+    confermate = sum(1 for r in righe if r.get("sme_approved"))
+    ui.sezione(titolo, spiegazione, len(righe), confermate if righe else None)
 
-def render_mermaid_diagram(title, diagram, filename, height="500px"):
-    st.markdown(f"#### {title}")
-    if not diagram:
-        st.info("No diagram generated.")
+    if not righe:
+        ui.nota("Nothing here. An empty section is a valid answer: it means the code "
+                "did not show any — not that the analysis gave up.")
+        return righe
+
+    c1, c2 = st.columns([3, 2])
+    cerca = c1.text_input("Search", key=chiave + "_q",
+                          placeholder="any word in any column",
+                          help="Filters the rows below. Clear it to add or remove rows.")
+    da_vedere = c2.checkbox("Only rows still to check", key=chiave + "_f",
+                            value=False, disabled=confermate == 0)
+
+    coppie = []
+    for i, r in enumerate(righe):
+        if cerca and cerca.lower() not in " ".join(str(v) for v in r.values()).lower():
+            continue
+        if da_vedere and r.get("sme_approved"):
+            continue
+        coppie.append((i, r))
+
+    filtrato = bool(cerca) or da_vedere
+    if filtrato and not coppie:
+        ui.nota("No row matches the filter.")
+        return righe
+
+    df = _ordina_colonne(pd.DataFrame([r for _, r in coppie]), nome)
+    modificato = st.data_editor(
+        df, hide_index=True, **ui.LARGA,
+        # Con un filtro attivo non si aggiungono né si tolgono righe: le
+        # modifiche tornano al loro posto per posizione, e questo funziona solo
+        # se il numero di righe non cambia sotto le mani.
+        num_rows="fixed" if filtrato else "dynamic",
+        key=chiave, column_config=_config_colonne(nome))
+    nuove = modificato.to_dict("records")
+
+    if not filtrato:
+        return nuove
+    for (indice, _), nuova in zip(coppie, nuove):
+        righe[indice] = nuova
+    st.caption(f"Showing {len(coppie)} of {len(righe)} rows. Clear the filter to add or remove rows.")
+    return righe
+
+
+def render_diagramma(titolo, diagramma, nomefile):
+    if not diagramma:
+        ui.nota("No diagram for this one — neither the model nor the tables had enough to draw.")
         return
     try:
-        st_mermaid(diagram, height=height)
+        st_mermaid(diagramma, height="520px")
     except Exception:
-        st.warning("Diagram could not be rendered. Source below.")
+        st.warning("The diagram could not be drawn here. Its source is below — "
+                   "paste it into mermaid.live to see what is wrong.")
     with st.expander("Diagram source"):
-        st.code(diagram, language="mermaid")
-    st.download_button(label=f"Download {filename}", data=diagram, file_name=filename,
-                       mime="text/plain", use_container_width=True)
+        st.code(diagramma, language="mermaid")
+    st.download_button(f"Download {nomefile}", data=diagramma, file_name=nomefile,
+                       mime="text/plain")
+
 
 def quality_indicators(result, metadata):
     """Indicatori su QUANTO È ANCORATO il risultato, non su quanto è completo.
@@ -759,13 +858,7 @@ def quality_indicators(result, metadata):
 
     Nessuna misura automatica può dire quanta parte di un'applicazione è stata
     catturata — servirebbe sapere in anticipo la risposta. Si può però misurare
-    quanto è solido quello che c'è, ed è quello che si mostra:
-
-      · quanti file sono stati effettivamente citati da almeno una riga;
-      · quante righe portano un'evidenza dal codice;
-      · quante righe sono ad alta confidenza;
-      · quante dipendenze restano non risolte.
-    """
+    quanto è solido quello che c'è, ed è quello che si mostra."""
     sezioni = {
         "Business logic": bool(result.get("business_rules") or result.get("business_processes")),
         "Dependencies": bool(result.get("dependencies")),
@@ -776,34 +869,40 @@ def quality_indicators(result, metadata):
     }
     file_totali = {f.get("filename") for f in metadata.get("files", [])} - {None, ""}
     citati = set()
-    righe, con_evidenza, alta_confidenza, non_risolte = 0, 0, 0, 0
+    righe, con_evidenza, alta, non_risolte, confermate = 0, 0, 0, 0, 0
+    gravi = {"CRITICAL": 0, "HIGH": 0}
     for nome in contract.CAMPI:
         for r in result.get(nome, []) or []:
             righe += 1
             if str(r.get("evidence", "")).strip():
                 con_evidenza += 1
             if str(r.get("confidence", "")).strip().upper() == "HIGH":
-                alta_confidenza += 1
+                alta += 1
+            if r.get("sme_approved"):
+                confermate += 1
             if r.get("dependency_type") == "PROBABLE_CALL":
                 non_risolte += 1
+            sev = str(r.get("severity", "")).strip().upper()
+            if sev in gravi:
+                gravi[sev] += 1
             for campo in ("source_file", "affected_component", "source"):
-                v = str(r.get(campo, "")).strip()
-                if v in file_totali:
-                    citati.add(v)
+                if str(r.get(campo, "")).strip() in file_totali:
+                    citati.add(str(r.get(campo, "")).strip())
+
     def pct(parte, tutto):
         return round(parte / tutto * 100) if tutto else 0
-    return {
-        "sezioni": sezioni,
-        "sezioni_pct": pct(sum(sezioni.values()), len(sezioni)),
-        "file_totali": len(file_totali),
-        "file_citati": len(citati),
-        "file_pct": pct(len(citati), len(file_totali)),
-        "file_mai_citati": sorted(file_totali - citati),
-        "righe": righe,
-        "evidenza_pct": pct(con_evidenza, righe),
-        "confidenza_alta_pct": pct(alta_confidenza, righe),
-        "dipendenze_non_risolte": non_risolte,
-    }
+
+    return {"sezioni": sezioni, "sezioni_pct": pct(sum(sezioni.values()), len(sezioni)),
+            "file_totali": len(file_totali), "file_citati": len(citati),
+            "file_pct": pct(len(citati), len(file_totali)),
+            "file_mai_citati": sorted(file_totali - citati),
+            "righe": righe, "confermate": confermate,
+            "confermate_pct": pct(confermate, righe),
+            "evidenza_pct": pct(con_evidenza, righe),
+            "confidenza_alta_pct": pct(alta, righe),
+            "dipendenze_non_risolte": non_risolte,
+            "critici": gravi["CRITICAL"], "alti": gravi["HIGH"]}
+
 
 @st.cache_data(show_spinner=False)
 def build_pdf(payload, metadata_payload, provider, model_name):
@@ -811,123 +910,145 @@ def build_pdf(payload, metadata_payload, provider, model_name):
                                metadata=json.loads(metadata_payload),
                                provider=provider, model_name=model_name)
 
+
 @st.cache_data(show_spinner=False)
 def build_docx(payload, metadata_payload, provider, model_name):
     return generate_docx_report(analysis_result=json.loads(payload),
                                 metadata=json.loads(metadata_payload),
                                 provider=provider, model_name=model_name)
 
+
 # =============================================================================
-# 9. SIDEBAR
+# 9. LA BARRA LATERALE — tre tappe, in ordine.
+# I numeri ci stanno perché questa È una sequenza: senza chiave non si analizza,
+# senza sorgenti non si esporta. Fuori da una sequenza vera, numerare è
+# decorazione.
 # =============================================================================
-st.sidebar.title("⚙️ Configuration")
-provider = st.sidebar.selectbox("AI Provider", ["Microsoft Azure OpenAI", "Anthropic Claude", "Google Gemini"])
+ui.tappa("1", "Model")
+provider = st.sidebar.selectbox(
+    "Provider", ["Microsoft Azure OpenAI", "Anthropic Claude", "Google Gemini"],
+    help="Where the analysis runs. The app finds the usable models on your key by itself.")
 
 azure_endpoint = None
 if provider == "Microsoft Azure OpenAI":
-    api_key = st.sidebar.text_input("API Key", type="password", value=os.environ.get("AZURE_OPENAI_API_KEY", ""))
-    azure_endpoint = st.sidebar.text_input("Endpoint", value=os.environ.get("AZURE_OPENAI_ENDPOINT", ""))
+    api_key = st.sidebar.text_input("API key", type="password",
+                                    value=os.environ.get("AZURE_OPENAI_API_KEY", ""))
+    azure_endpoint = st.sidebar.text_input("Endpoint",
+                                           value=os.environ.get("AZURE_OPENAI_ENDPOINT", ""))
     model_name = st.sidebar.text_input(
-        "Deployment Name (first in the chain)", value=os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o"),
+        "Deployment name", value=os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o"),
         help="On Azure the callable name is the deployment name, which only you know. "
-             "It always stays first in the chain; the other deployments found on the "
-             "endpoint are used as fallback.")
+             "It stays first in the chain; other deployments on the endpoint act as fallback.")
 elif provider == "Anthropic Claude":
-    api_key = st.sidebar.text_input("API Key", type="password", value=os.environ.get("ANTHROPIC_API_KEY", ""))
+    api_key = st.sidebar.text_input("API key", type="password",
+                                    value=os.environ.get("ANTHROPIC_API_KEY", ""))
     model_name = st.sidebar.text_input(
-        "Preferred model (optional)", value=os.environ.get("ANTHROPIC_MODEL", ""),
-        help="Leave empty to let the app discover the models available on this key.")
+        "Preferred model", value=os.environ.get("ANTHROPIC_MODEL", ""),
+        placeholder="leave empty to choose automatically",
+        help="Leave empty and the app uses the best model your key can reach.")
 else:
-    api_key = st.sidebar.text_input("API Key", type="password", value=os.environ.get("GEMINI_API_KEY", ""))
+    api_key = st.sidebar.text_input("API key", type="password",
+                                    value=os.environ.get("GEMINI_API_KEY", ""))
     model_name = st.sidebar.text_input(
-        "Preferred model (optional)", value=os.environ.get("GEMINI_MODEL", ""),
-        help="Leave empty to let the app discover the models available on this key.")
+        "Preferred model", value=os.environ.get("GEMINI_MODEL", ""),
+        placeholder="leave empty to choose automatically",
+        help="Leave empty and the app uses the best model your key can reach.")
 
 preferenza = "qualita" if st.sidebar.radio(
-    "Model preference", ["Quality first", "Speed / cost first"], index=0,
-    help="Quality first starts from the strongest models (pro / opus / large) and falls "
-         "back downwards. Speed first is the Nuvia rule: fast models only."
-) == "Quality first" else "velocita"
+    "Pick models by", ["Quality", "Speed and cost"], index=0, horizontal=True,
+    help="Quality starts from the strongest models and falls back downwards. "
+         "Speed keeps only the fast ones."
+) == "Quality" else "velocita"
 
 RAGIONAMENTO = {"Fast": "minimal", "Balanced": "low", "Thorough": "medium", "Deep": "high"}
 ragionamento = RAGIONAMENTO[st.sidebar.select_slider(
-    "Reasoning effort", options=list(RAGIONAMENTO), value="Balanced",
+    "Thinking time", options=list(RAGIONAMENTO), value="Balanced",
     help="How much the model may think before answering. This is the biggest lever on how "
-         "long a run takes — far more than the choice of model. If a model refuses the level "
-         "you pick (some will not go below medium), the app moves up one step for that model, "
-         "remembers it, and carries on: you always get the fastest that model can do.")]
+         "long a run takes — more than the choice of model. If a model refuses the level you "
+         "pick, the app moves up one step for that model and carries on.")]
 
-with st.sidebar.expander("🔌 Model chain", expanded=False):
-    st.caption(
-        "The app asks the provider which models this key can actually use, keeps the "
-        "best ones, probes them with a two-word question (5s each, 10s overall) and "
-        "runs the analysis on the first that answers — falling back downwards if it dies "
-        "mid-run. The winner is remembered for 10 minutes."
-    )
-    if st.button("Test connection", use_container_width=True, disabled=not api_key):
+with st.sidebar.expander("Check the connection"):
+    st.caption("Runs a two-word question against each model in turn and reports "
+               "the first that answers.")
+    if st.button("Run check", disabled=not api_key, **ui.LARGA):
         diario = []
         catena = build_chain(provider, api_key, azure_endpoint, model_name, preferenza, diario,
                              ragionamento)
         t0 = time.time()
         try:
             r = catena.chiedi("ping", solo_prova=True, forza_elenco=True)
-            st.success(f"Answering model: {r.modello}  ({int((time.time()-t0)*1000)} ms)")
+            st.success(f"{r.modello} answered in {int((time.time()-t0)*1000)} ms")
         except NessunModello as e:
             st.error(catena.messaggio_nessuno(e))
             st.caption(f"technical cause: {e.causa}")
         st.code("\n".join(diario) or "no log", language="text")
 
-st.sidebar.divider()
-st.sidebar.subheader("📂 Pilot Codebase")
-uploaded_files = st.sidebar.file_uploader("Upload files", type=SUPPORTED_EXTENSIONS, accept_multiple_files=True)
-pasted_filename = st.sidebar.text_input("Pasted source filename", value="pasted_source.sql")
-pasted_code = st.sidebar.text_area("Or paste source code", height=200)
+ui.tappa("2", "Source code")
+uploaded_files = st.sidebar.file_uploader(
+    "Files", type=SUPPORTED_EXTENSIONS, accept_multiple_files=True,
+    help="Oracle PL/SQL, COBOL, RPG, Java, Python and more. Up to 2 MB per file.")
+with st.sidebar.expander("Or paste a snippet"):
+    pasted_filename = st.text_input("File name", value="pasted_source.sql")
+    pasted_code = st.text_area("Source", height=180,
+                               placeholder="Paste code here to analyse it without uploading a file.")
 
-force_rerun = st.sidebar.checkbox("Force re-analysis", value=False,
-                                  help="Off: identical input, provider and contract reuse the "
-                                       "previous answer instead of paying for it again.")
-run_analysis = st.sidebar.button("🚀 Analyze Application", type="primary", use_container_width=True)
-if st.sidebar.button("🗑️ Clear Analysis", use_container_width=True):
+ui.tappa("3", "Run")
+force_rerun = st.sidebar.checkbox(
+    "Analyse again from scratch", value=False,
+    help="Off: the same files, provider and contract reuse the previous answer "
+         "instead of paying for it a second time.")
+run_analysis = st.sidebar.button("Analyse the application", type="primary", **ui.LARGA)
+if st.sidebar.button("Clear results", **ui.LARGA):
     for key in ["analysis_result", "analysis_metadata", "analysis_sources",
-                "analysis_provider", "analysis_model", "analysis_signature"]:
+                "analysis_provider", "analysis_model", "analysis_signature",
+                "pdf_bytes", "docx_bytes"]:
         st.session_state.pop(key, None)
     st.rerun()
 
 # =============================================================================
-# 10. MAIN
+# 10. LA PAGINA
 # =============================================================================
-st.title("🧭 Legacy Application Knowledge Extractor")
-st.caption("AI-assisted reverse engineering with human-in-the-loop SME validation.")
-
 try:
     sources = build_source_collection(uploaded_files, pasted_code, pasted_filename)
 except Exception as error:
     st.error(str(error))
     sources = []
 
+stato = []
+stato.append(ui.marca(provider.replace("Microsoft ", "").replace("Anthropic ", ""), "◇",
+                      "accesa" if api_key else "spenta"))
+stato.append(ui.marca("API key set" if api_key else "API key missing", "⌁",
+                      "ok" if api_key else "alta"))
 if sources:
     caratteri = sum(len(s["content"]) for s in sources)
     lotti = len(split_into_batches(sources))
-    st.caption(f"{len(sources)} file(s), {caratteri:,} characters"
-               + (f" — will be analysed in {lotti} batches" if lotti > 1 else ""))
+    stato.append(ui.marca(f"{len(sources)} file{'s' if len(sources) != 1 else ''}"
+                          f" · {caratteri:,} characters", "▤"))
+    if lotti > 1:
+        stato.append(ui.marca(f"{lotti} batches", "▥"))
+else:
+    stato.append(ui.marca("No source loaded", "▤", "spenta"))
+
+ui.testata("Legacy Application Knowledge Extractor",
+           "Read a legacy codebase and hand a domain expert something they can check, "
+           "correct and sign.", stato)
 
 if run_analysis:
     if not sources:
-        st.error("Provide source code.")
+        st.error("Add at least one file, or paste a snippet, before running the analysis.")
     elif not api_key:
-        st.error("Missing API Key.")
+        st.error("The API key is missing. Add it under step 1 and run again.")
     elif provider == "Microsoft Azure OpenAI" and not azure_endpoint:
-        st.error("Missing Azure endpoint.")
+        st.error("Azure needs the endpoint of your resource. Add it under step 1.")
     else:
         firma = analysis_signature(sources, provider, model_name, preferenza)
         if not force_rerun and st.session_state.get("analysis_signature") == firma:
-            st.info("Same input as the previous run: showing the existing analysis. "
-                    "Tick «Force re-analysis» to run it again.")
+            st.info("Same files and same settings as the last run — showing that result. "
+                    "Tick «Analyse again from scratch» to pay for a new one.")
         else:
             barra = st.progress(0.0, text="Reading the code…")
             try:
                 metadata = extract_technical_metadata(sources)
-
                 inizio = time.time()
 
                 def avanza(i, n, nomi):
@@ -941,13 +1062,15 @@ if run_analysis:
                     sources, metadata, provider, api_key, model_name,
                     azure_endpoint, preferenza, progress=avanza,
                     ragionamento=ragionamento)
-                barra.progress(1.0, text="Done.")
-                st.session_state["analysis_result"] = result
-                st.session_state["analysis_metadata"] = metadata
-                st.session_state["analysis_sources"] = sources
-                st.session_state["analysis_provider"] = provider
-                st.session_state["analysis_model"] = result.get("_modello", model_name)
-                st.session_state["analysis_signature"] = firma
+                barra.empty()
+                st.session_state.update({
+                    "analysis_result": result, "analysis_metadata": metadata,
+                    "analysis_sources": sources, "analysis_provider": provider,
+                    "analysis_model": result.get("_modello", model_name),
+                    "analysis_signature": firma})
+                st.session_state.pop("pdf_bytes", None)
+                st.session_state.pop("docx_bytes", None)
+                ui.avviso_temporaneo(f"Analysed in {result.get('_durata_s', '?')}s")
             except NessunModello as e:
                 barra.empty()
                 catena = build_chain(provider, api_key, azure_endpoint, model_name, preferenza, [],
@@ -957,193 +1080,246 @@ if run_analysis:
                     st.code("\n".join(e.diario) or f"cause: {e.causa}", language="text")
             except Exception as e:
                 barra.empty()
-                st.error(f"Analysis failed: {e}")
+                st.error(f"The analysis stopped: {e}")
 
 if "analysis_result" not in st.session_state:
-    st.info("Upload source files and start the analysis.")
+    ui.stato_vuoto(
+        "Start with one file",
+        "The application reads your source twice — once with a parser, which is never wrong "
+        "but understands nothing, and once with a model, which understands but can be wrong. "
+        "You get both, marked for where each row came from.",
+        ["<b>Connect a model.</b> Paste an API key under step 1. The app finds the usable "
+         "models on that key by itself — you do not have to name one.",
+         "<b>Add source code.</b> Upload files, or paste a snippet. A single stored "
+         "procedure is enough for a first look.",
+         "<b>Run the analysis</b>, then work down the tables. Tick a row when you have "
+         "checked it, and export when you are done."])
     st.stop()
 
 result = st.session_state["analysis_result"]
 metadata = st.session_state["analysis_metadata"]
-saved_sources = st.session_state["analysis_sources"]
-
 q = quality_indicators(result, metadata)
-c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("Files", metadata["file_count"])
-c2.metric("Lines of Code", metadata["total_line_count"])
-c3.metric("Components", len(result.get("components", [])))
-c4.metric("Business rules", len(result.get("business_rules", [])))
-c5.metric("Files described", f"{q['file_pct']}%",
-          help="Share of the submitted files that at least one row refers to. "
-               "This is not a measure of how much of the application has been captured — "
-               "no automatic measure can tell you that.")
 
-with st.expander("How well grounded is this analysis?"):
-    st.caption("These numbers describe how solid the rows are, not how complete the picture is.")
-    g1, g2, g3 = st.columns(3)
-    g1.metric("Rows with evidence", f"{q['evidenza_pct']}%", help=f"{q['righe']} rows in total")
-    g2.metric("HIGH confidence", f"{q['confidenza_alta_pct']}%")
-    g3.metric("Unresolved calls", q["dipendenze_non_risolte"],
-              help="Call patterns whose target is not declared in the submitted code: "
-                   "either outside the perimeter, or noise.")
-    st.write("**Sections filled:** " + ", ".join(
-        ("✅ " if v else "⬜ ") + k for k, v in q["sezioni"].items()))
-    if q["file_mai_citati"]:
-        st.warning("No row refers to these files — worth checking whether they were "
-                   "understood at all: " + ", ".join(q["file_mai_citati"][:12])
-                   + (" …" if len(q["file_mai_citati"]) > 12 else ""))
-    risoluzione = metadata.get("dependency_resolution")
-    if risoluzione:
-        st.caption("Dependency resolution — "
-                   f"resolved to a declared component: {risoluzione['resolved_to_declared_component']} · "
-                   f"outside the perimeter: {risoluzione['unresolved_outside_perimeter']} · "
-                   f"discarded as library noise: {risoluzione['discarded_as_library_noise']}")
+ui.cifre([
+    {"valore": f"{metadata['file_count']}", "voce": "Files read",
+     "nota": f"{metadata['total_line_count']:,} lines"},
+    {"valore": f"{len(result.get('business_rules', []))}", "voce": "Business rules",
+     "nota": "the section that pays for the run", "rilievo": True},
+    {"valore": f"{len(result.get('components', []))}", "voce": "Components",
+     "nota": f"{len(result.get('dependencies', []))} dependencies"},
+    {"valore": f"{q['critici'] + q['alti']}", "voce": "Serious risks",
+     "nota": f"{q['critici']} critical · {q['alti']} high"},
+    {"valore": f"{q['confermate_pct']}%", "voce": "Rows checked",
+     "nota": f"{q['confermate']} of {q['righe']}"},
+])
 
-avvisi = result.get("contract_warnings") or []
-if avvisi:
-    with st.expander(f"⚠️ {len(avvisi)} contract notes (what the app had to fix in the model's answer)"):
-        st.code("\n".join(avvisi[:200]), language="text")
-
-tabs = st.tabs(["Overview", "Business Logic", "Architecture", "Data Flows",
-                "Risks & Impact", "Diagrams", "SME Validation", "Static Evidence", "Downloads"])
+tabs = st.tabs(["Summary", "Business", "Architecture", "Data", "Risks", "Diagrams",
+                "For the expert", "Parser evidence", "Export"])
 
 with tabs[0]:
-    st.success(result.get("executive_summary") or "N/A")
-    st.write("**Purpose:**", result.get("application_purpose") or "N/A")
-    st.write("**Notes:**", result.get("technical_notes") or "N/A")
-    st.caption(f"Model that answered: {st.session_state.get('analysis_model','?')} · "
-               f"reasoning: {result.get('_ragionamento','?')} · "
+    st.markdown("#### What this application does")
+    st.write(result.get("application_purpose") or "—")
+    st.markdown("#### In full")
+    st.write(result.get("executive_summary") or "—")
+    if (result.get("technical_notes") or "").strip():
+        st.markdown("#### Notes for a migration team")
+        st.write(result["technical_notes"])
+
+    st.markdown("#### How to read the tables")
+    ui.fila([ui.marca("Parser", "■"), ui.marca("Model", "□"),
+             ui.marca("HIGH", "●●●"), ui.marca("MEDIUM", "●●○"), ui.marca("LOW", "●○○"),
+             ui.marca_gravita("CRITICAL"), ui.marca_gravita("HIGH"),
+             ui.marca_gravita("MEDIUM"), ui.marca_gravita("LOW")])
+    st.caption("A filled square is a fact the parser found in the source and cannot be wrong "
+               "about. A hollow square is the model's reading of it, and carries a confidence. "
+               "Nothing here is conveyed by colour alone.")
+
+    with st.expander("How well grounded is this analysis?"):
+        st.caption("These numbers say how solid the rows are — not how much of the "
+                   "application has been captured. No automatic measure can tell you that.")
+        ui.cifre([
+            {"valore": f"{q['file_pct']}%", "voce": "Files described",
+             "nota": f"{q['file_citati']} of {q['file_totali']}"},
+            {"valore": f"{q['evidenza_pct']}%", "voce": "Rows with evidence"},
+            {"valore": f"{q['confidenza_alta_pct']}%", "voce": "High confidence"},
+            {"valore": f"{q['dipendenze_non_risolte']}", "voce": "Unresolved calls",
+             "nota": "target not declared in the code you sent"},
+        ])
+        st.write("**Sections filled:** " + ", ".join(
+            ("✓ " if v else "· ") + k for k, v in q["sezioni"].items()))
+        if q["file_mai_citati"]:
+            st.warning("No row refers to these files. Worth checking whether they were "
+                       "understood at all: " + ", ".join(q["file_mai_citati"][:12])
+                       + (" …" if len(q["file_mai_citati"]) > 12 else ""))
+        risoluzione = metadata.get("dependency_resolution")
+        if risoluzione:
+            st.caption(
+                f"Dependencies — resolved to a declared component: "
+                f"{risoluzione['resolved_to_declared_component']} · outside the perimeter: "
+                f"{risoluzione['unresolved_outside_perimeter']} · discarded as library noise: "
+                f"{risoluzione['discarded_as_library_noise']}")
+
+    avvisi = result.get("contract_warnings") or []
+    if avvisi:
+        with st.expander(f"What the app had to fix in the model's answer ({len(avvisi)})"):
+            st.caption("Missing fields, values put back in range, rows dropped. Kept in the "
+                       "open so you know how much to trust what you are reading.")
+            st.code("\n".join(avvisi[:200]), language="text")
+
+    st.caption(f"Answered by {st.session_state.get('analysis_model', '?')} · "
+               f"thinking: {result.get('_ragionamento', '?')} · "
                f"batches: {result.get('_lotti', 1)} · "
-               f"took {result.get('_durata_s','?')}s · "
-               f"contract v{result.get('contract_version','?')}")
+               f"took {result.get('_durata_s', '?')}s · "
+               f"contract v{result.get('contract_version', '?')}")
 
 with tabs[1]:
-    result["business_processes"] = render_contract_section("business_processes", result, "bp_edit")
-    result["business_rules"] = render_contract_section("business_rules", result, "br_edit")
+    result["business_processes"] = render_tabella("business_processes", result, "bp_edit")
+    st.divider()
+    result["business_rules"] = render_tabella("business_rules", result, "br_edit")
 
 with tabs[2]:
-    result["components"] = render_contract_section("components", result, "comp_edit")
-    result["dependencies"] = render_contract_section("dependencies", result, "dep_edit")
-    result["interfaces"] = render_contract_section("interfaces", result, "int_edit")
-    result["application_mapping"] = render_contract_section("application_mapping", result, "map_edit")
+    result["components"] = render_tabella("components", result, "comp_edit")
+    st.divider()
+    result["dependencies"] = render_tabella("dependencies", result, "dep_edit")
+    st.divider()
+    result["interfaces"] = render_tabella("interfaces", result, "int_edit")
+    st.divider()
+    result["application_mapping"] = render_tabella("application_mapping", result, "map_edit")
 
 with tabs[3]:
-    result["data_objects"] = render_contract_section("data_objects", result, "obj_edit")
-    result["data_flows"] = render_contract_section("data_flows", result, "flow_edit")
+    result["data_objects"] = render_tabella("data_objects", result, "obj_edit")
+    st.divider()
+    result["data_flows"] = render_tabella("data_flows", result, "flow_edit")
 
 with tabs[4]:
-    result["technical_risks"] = render_contract_section("technical_risks", result, "risk_edit")
-    result["impact_analysis"] = render_contract_section("impact_analysis", result, "impact_edit")
+    result["technical_risks"] = render_tabella("technical_risks", result, "risk_edit")
+    st.divider()
+    result["impact_analysis"] = render_tabella("impact_analysis", result, "impact_edit")
 
 with tabs[5]:
     DIAGRAMMI = {
-        "Process Flow": ("mermaid_process_flow", "bp.mmd"),
-        "App Map": ("mermaid_application_map", "app.mmd"),
-        "Data Flow": ("mermaid_data_flow", "df.mmd"),
-        "Call Graph": ("mermaid_call_graph", "cg.mmd"),
+        "Process flow": ("mermaid_process_flow", "process_flow.mmd"),
+        "Application map": ("mermaid_application_map", "application_map.mmd"),
+        "Data flow": ("mermaid_data_flow", "data_flow.mmd"),
+        "Call graph": ("mermaid_call_graph", "call_graph.mmd"),
     }
-    col_a, col_b = st.columns([2, 1])
-    dt = col_a.selectbox("Diagram", list(DIAGRAMMI))
-    campo, nomefile = DIAGRAMMI[dt]
+    scelto = ui.scelta_segmentata("Diagram", list(DIAGRAMMI), 0, "scelta_diagramma")
+    campo, nomefile = DIAGRAMMI[scelto]
     dai_dati = (result.get("_diagrammi_dai_dati") or {}).get(campo, "")
     dal_modello = (result.get("_diagrammi_dal_modello") or {}).get(campo, "")
 
-    # Due versioni dello stesso diagramma: quella del modello e quella
-    # costruita dalle tabelle. La seconda non può contraddire le tabelle,
-    # perché è le tabelle — e si rifà dopo le correzioni dello SME.
-    scelte = []
+    versioni = []
     if dal_modello.strip():
-        scelte.append("From the model")
+        versioni.append("From the model")
     if dai_dati.strip():
-        scelte.append("Built from the tables")
-    if len(scelte) > 1:
+        versioni.append("Built from the tables")
+    if len(versioni) > 1:
         predefinita = "Built from the tables" if result.get(campo) == dai_dati else "From the model"
-        sorgente = col_b.radio("Source", scelte, index=scelte.index(predefinita), horizontal=True)
-        diagramma = dai_dati if sorgente == "Built from the tables" else dal_modello
+        quale = ui.scelta_segmentata("Version", versioni, versioni.index(predefinita),
+                                     "versione_diagramma",
+                                     "The tables version cannot contradict the rows you "
+                                     "are validating, because it is drawn from them.")
+        diagramma = dai_dati if quale == "Built from the tables" else dal_modello
     else:
         diagramma = result.get(campo) or dai_dati or dal_modello
-    fonte_scelta = (result.get("_diagrammi_fonte") or {}).get(campo, "")
-    if fonte_scelta == "dati":
-        st.caption("Source: built from the validated tables. "
-                   "Use «Rebuild» below after correcting rows to keep it in step.")
-    elif fonte_scelta == "modello":
-        st.caption("Source: written by the model.")
+        fonte = (result.get("_diagrammi_fonte") or {}).get(campo, "")
+        if fonte == "dati":
+            st.caption("Drawn from the validated tables — the model did not return this one.")
+        elif fonte == "modello":
+            st.caption("Written by the model.")
 
-    if st.button("🔄 Rebuild from the current tables", use_container_width=True,
-                 help="Redraws all four diagrams from the rows as they are now, "
-                      "including the SME's corrections."):
+    if st.button("Redraw from the current tables",
+                 help="Draws all four again from the rows as they are now, "
+                      "including your corrections."):
         result["_diagrammi_dai_dati"] = diagrams.costruisci(result)
         for _c in diagrams.COSTRUTTORI:
             if result["_diagrammi_dai_dati"].get(_c):
                 result[_c] = result["_diagrammi_dai_dati"][_c]
+                (result.setdefault("_diagrammi_fonte", {}))[_c] = "dati"
         st.session_state["analysis_result"] = result
+        ui.avviso_temporaneo("Diagrams redrawn")
         st.rerun()
 
-    render_mermaid_diagram(dt, diagramma, nomefile)
+    render_diagramma(scelto, diagramma, nomefile)
 
 with tabs[6]:
-    st.caption("What the model could not settle on its own. These are the rows to take "
-               "to the business, not to the code.")
-    result["validation_questions"] = render_contract_section("validation_questions", result, "vq_edit")
-    result["assumptions"] = render_contract_section("assumptions", result, "as_edit")
+    result["validation_questions"] = render_tabella("validation_questions", result, "vq_edit")
+    st.divider()
+    result["assumptions"] = render_tabella("assumptions", result, "as_edit")
 
 with tabs[7]:
-    st.caption("Everything below was produced by the parser, not by the model.")
-    st.json(metadata, expanded=False)
+    ui.sezione("What the parser found",
+               "Produced by sqlglot and pattern matching, with no model involved. "
+               "These are facts: if a row here disagrees with a table, the table is wrong.")
+    ui.cifre([
+        {"valore": f"{len(metadata.get('components', []))}", "voce": "Components"},
+        {"valore": f"{len(metadata.get('dependencies', []))}", "voce": "Dependencies"},
+        {"valore": f"{len(metadata.get('detected_tables', []))}", "voce": "SQL objects"},
+        {"valore": f"{len(metadata.get('local_risks', []))}", "voce": "Risk patterns"},
+    ])
+    with st.expander("Full parser output (JSON)"):
+        st.json(metadata, expanded=False)
 
-# SALVATAGGIO STATO: sincronizza le modifiche fatte dallo SME nelle tabelle
+# Le correzioni fatte nelle tabelle rientrano nello stato prima dell'export,
+# altrimenti si scaricherebbe la versione di prima delle correzioni.
 st.session_state["analysis_result"] = result
 
 with tabs[8]:
-    st.markdown("### 📥 Export Validated Knowledge Artifacts")
-    st.write("Generate and download the complete technical documentation including all "
-             "SME-validated business rules, technical risks and architectural metadata.")
-    # Dove vengono disegnati i diagrammi va detto PRIMA di premere il bottone:
-    # il codice mermaid descrive l'applicazione del cliente, e mandarlo a un
-    # servizio pubblico è una decisione, non un dettaglio di implementazione.
-    _locale_ok, _locale_dettaglio = mermaid_render.disponibile()
-    if _locale_ok:
-        st.caption(f"Diagrams are rendered locally — nothing leaves this machine ({_locale_dettaglio}).")
+    ui.sezione("Export", "The tables as they are now, including your corrections.")
+    locale_ok, locale_dettaglio = mermaid_render.disponibile()
+    if locale_ok:
+        ui.nota(f"Diagrams are drawn on this machine — nothing leaves it ({locale_dettaglio}).")
     elif os.environ.get("MERMAID_LOCAL_ONLY") == "1":
-        st.warning("Local diagram rendering is unavailable and the external service is "
-                   f"disabled: documents will carry the diagram source instead of the image. ({_locale_dettaglio})")
+        st.warning("Local diagram rendering is unavailable and the external service is off: "
+                   f"the documents will carry the diagram source instead of the picture. ({locale_dettaglio})")
     else:
         st.warning("Local diagram rendering is unavailable, so diagram code will be sent to the "
-                   f"public mermaid.ink service. ({_locale_dettaglio}) "
-                   "Install it with: npm install -g @mermaid-js/mermaid-cli — "
-                   "or set MERMAID_LOCAL_ONLY=1 to forbid the external call.")
-    # I due export costano: il PDF scarica quattro diagrammi da mermaid.ink. Prima
-    # venivano rigenerati a OGNI interazione con la pagina, anche solo per spuntare
-    # una casella. Ora si generano quando servono, e il risultato si tiene in cache.
+                   f"public mermaid.ink service. ({locale_dettaglio}) Install it with "
+                   "`npm install -g @mermaid-js/mermaid-cli`, or set MERMAID_LOCAL_ONLY=1 "
+                   "to forbid the call.")
+
     payload = json.dumps(result, ensure_ascii=False, sort_keys=True, default=str)
     metadata_payload = json.dumps(metadata, ensure_ascii=False, sort_keys=True, default=str)
     col_pdf, col_docx, col_json = st.columns(3)
 
     with col_pdf:
-        if st.button("📄 Build PDF report", use_container_width=True):
-            with st.spinner("Rendering diagrams and building the PDF…"):
-                st.session_state["pdf_bytes"] = build_pdf(
-                    payload, metadata_payload, st.session_state.get("analysis_provider", "AI Provider"),
-                    st.session_state.get("analysis_model", "Default Model"))
-        if st.session_state.get("pdf_bytes"):
-            st.download_button("⬇️ Download PDF", data=st.session_state["pdf_bytes"],
-                               file_name="Legacy_Application_Documentation.pdf",
-                               mime="application/pdf", use_container_width=True)
+        with ui.riquadro():
+            st.markdown("**PDF report**")
+            st.caption("Landscape, with the diagrams drawn in. For sharing and signing.")
+            if st.button("Build PDF", key="fai_pdf", **ui.LARGA):
+                with st.spinner("Drawing diagrams and laying out the PDF…"):
+                    st.session_state["pdf_bytes"] = build_pdf(
+                        payload, metadata_payload,
+                        st.session_state.get("analysis_provider", "AI Provider"),
+                        st.session_state.get("analysis_model", "Default Model"))
+            if st.session_state.get("pdf_bytes"):
+                st.download_button("Download PDF", data=st.session_state["pdf_bytes"],
+                                   file_name="Legacy_Application_Documentation.pdf",
+                                   mime="application/pdf", **ui.LARGA)
 
     with col_docx:
-        if st.button("📝 Build Word (.docx)", use_container_width=True):
-            with st.spinner("Building the Word document…"):
-                st.session_state["docx_bytes"] = build_docx(
-                    payload, metadata_payload, st.session_state.get("analysis_provider", "AI Provider"),
-                    st.session_state.get("analysis_model", "Default Model"))
-        if st.session_state.get("docx_bytes"):
-            st.download_button("⬇️ Download Word", data=st.session_state["docx_bytes"],
-                               file_name="Legacy_Application_Documentation.docx",
-                               mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                               use_container_width=True)
+        with ui.riquadro():
+            st.markdown("**Word document**")
+            st.caption("The same content, editable. For teams that keep working on it.")
+            if st.button("Build Word", key="fai_docx", **ui.LARGA):
+                with st.spinner("Laying out the Word document…"):
+                    st.session_state["docx_bytes"] = build_docx(
+                        payload, metadata_payload,
+                        st.session_state.get("analysis_provider", "AI Provider"),
+                        st.session_state.get("analysis_model", "Default Model"))
+            if st.session_state.get("docx_bytes"):
+                st.download_button(
+                    "Download Word", data=st.session_state["docx_bytes"],
+                    file_name="Legacy_Application_Documentation.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    **ui.LARGA)
 
     with col_json:
-        st.download_button("📦 Export JSON Data",
-                           data=json.dumps(result, indent=2, ensure_ascii=False).encode("utf-8"),
-                           file_name="Legacy_Application_Analysis.json",
-                           mime="application/json", use_container_width=True)
+        with ui.riquadro():
+            st.markdown("**Raw data**")
+            st.caption("Every row and every field, for whatever comes next.")
+            st.download_button(
+                "Download JSON",
+                data=json.dumps(result, indent=2, ensure_ascii=False, default=str).encode("utf-8"),
+                file_name="Legacy_Application_Analysis.json",
+                mime="application/json", **ui.LARGA)

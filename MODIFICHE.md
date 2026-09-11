@@ -1,13 +1,14 @@
 # Modifiche — Legacy Application Knowledge Extractor
 
-Versione contratto JSON: **2.0** · Collaudo: `python test_catena.py` → 72/72
+Versione contratto JSON: **2.0** · Collaudo: `python test_catena.py` → 83/83
 
 Quattro blocchi: **A** la catena modelli presa da Nuvia, **B** il contratto JSON,
 **C** difetti trovati per strada e robustezza, **D** i diagrammi (disegno locale e
 correzione dello schiacciamento nel PDF), **E** i diagrammi mancanti, **F** i limiti dichiarati nella guida,
 **G** velocità e provenienza dei diagrammi,
 **H** gli id che facevano esplodere il disegno,
-**I** interfaccia e accessibilità.
+**I** interfaccia e accessibilità,
+**J** i documenti.
 
 ---
 
@@ -89,7 +90,7 @@ non possono divergere.
 | C12 | **Controllo dell'endpoint Azure** prima di partire, e **il deployment scritto a mano resta sempre primo in catena**. | Su Azure il nome chiamabile è il deployment, che solo chi ha creato la risorsa conosce: non è derivabile e non va scavalcato dalla scoperta. |
 | C13 | **Metriche in interfaccia**: aggiunte «Business rules» e il modello che ha risposto, i lotti eseguiti, la versione del contratto. | Serve sapere chi ha scritto il documento che si sta per firmare. |
 | C14 | **Sorgente del diagramma sempre consultabile** in un pannello, anche quando il disegno riesce. | Quando un diagramma non si disegna, il sorgente è l'unico modo per capire perché. |
-| C15 | **Collaudo automatico `test_catena.py`** — 72 casi, nessuna rete, nessuna chiave, nessun costo: scoperta, scalata, memoria, messaggi, tetti, riparazione JSON, enum, Mermaid, lotti. | Porting del collaudo di Nuvia. È il modo per cambiare una regola e sapere subito cosa si rompe. |
+| C15 | **Collaudo automatico `test_catena.py`** — 83 casi, nessuna rete, nessuna chiave, nessun costo: scoperta, scalata, memoria, messaggi, tetti, riparazione JSON, enum, Mermaid, lotti. | Porting del collaudo di Nuvia. È il modo per cambiare una regola e sapere subito cosa si rompe. |
 | C16 | **`requirements.txt`**: tolti `openai`, `anthropic`, `google-genai`; `requests` è ora una dipendenza dichiarata dell'app, non solo dell'esportatore. | Vedi A16. Tre dipendenze pesanti in meno da aggiornare e da far passare in azienda. |
 | C17 | **README vero** (prima conteneva la parola «Ciao») e questo elenco. | — |
 
@@ -258,6 +259,50 @@ prima di tutto da dove viene ogni riga e quanto è solida.
 |---|---|---|
 | I25 | **I componenti nuovi verificano che Streamlit li sappia fare** (`segmented_control`, `toggle`, `container(border=…)`, `toast`): se manca, si ripiega su un controllo equivalente. | Un'installazione più vecchia perde un bordo, non una funzione. |
 | I26 | **`use_container_width` sostituito con `width="stretch"`**, deciso guardando la firma vera della funzione invece del numero di versione. | Il vecchio nome è in via di rimozione e riempiva la console di avvisi. Guardare la firma funziona anche sulle versioni in mezzo. |
+
+---
+
+## J · I documenti (PDF e Word), rifatti
+
+È il PDF, non l'applicazione, quello che finisce in mano al cliente. Era rimasto
+com'era mentre tutto il resto cambiava. `exporter.py` è riscritto.
+
+### Struttura
+
+| # | Modifica | Perché |
+|---|---|---|
+| J1 | **Una sola descrizione, due rese.** `prepara()` costruisce l'elenco dei blocchi del documento; PDF e Word si limitano a disegnarlo. | Prima erano due funzioni lunghe e parallele: ogni aggiunta andava fatta due volte, e avevano già smesso di dire le stesse cose. |
+| J2 | **Copertina** con quanto è stato letto, chi ha risposto, quante righe ci sono, quante hanno un riscontro nel codice, quante sono ad alta confidenza, **quante ha confermato un esperto**, quanti rischi gravi. | Chi riceve il documento deve sapere su cosa sta mettendo il nome prima di leggere la prima riga. |
+| J3 | **«How to read this document»**: la legenda di provenienza, confidenza, conferma e gravità, in copertina. | La distinzione fra fatto e lettura è il perno di tutto il progetto e non era scritta da nessuna parte nel documento. |
+| J4 | **Indice** delle otto sezioni. | — |
+| J5 | **Nuova sezione 7, «Open questions and assumptions»**: le domande per l'esperto e le assunzioni. | Erano nel contratto, erano nell'applicazione, e nel documento non arrivavano affatto. È la parte più utile per chi deve validare. |
+| J6 | **Numerazione cambiata**: §7 «Static Code Evidence» diventa **§8 «Appendix: what the parser found»**, con l'inventario e i conteggi della risoluzione delle chiamate. Le sezioni da 1 a 6 restano dov'erano. | Chi cita «sezione 7» nei propri documenti deve saperlo: è l'unico spostamento. |
+| J7 | **Piè di pagina** con titolo e numero di pagina. | — |
+
+### Contenuto delle tabelle
+
+| # | Modifica | Perché |
+|---|---|---|
+| J8 | **La provenienza si vede**: colonna «Found by» con `parser` o `model`. | Prima un fatto del parser e un'ipotesi del modello erano due righe identiche. |
+| J9 | **La confidenza è un conteggio di puntini** (`•••` `••·` `•··`) invece di una parola in maiuscolo. | Si confronta con l'occhio scorrendo la colonna, e si legge anche stampata in bianco e nero. |
+| J10 | **CORRETTO: `source` significava due cose diverse** e il documento ne mostrava una sola. In `components` e `technical_risks` è la provenienza; in `dependencies` e `data_flows` è l'origine della dipendenza. Il documento scriveva «Found by» su entrambe e trasformava `PKG_BILLING` in `pkg_billing`. Ora lo decide il contratto — nel primo caso il campo ha valori ammessi, nel secondo no. | Difetto trovato guardando il PDF generato, non il codice. Un nome di package abbassato di maiuscole in un documento di consegna è un errore che il cliente nota. |
+| J11 | **Rischi e impatti ordinati per gravità**, più alta per prima. | Un CRITICAL trentesimo, dopo ventinove LOW, è un CRITICAL che nessuno legge. Prima non si poteva ordinare: la gravità era testo libero. |
+| J12 | **Dipendenze ordinate per affidabilità**: prima le `CALL` certe, poi i `PROBABLE_CALL`. | L'ordine dice già quanto fidarsi, senza leggere colonna per colonna. |
+| J13 | **Gravità con fondo tinto e parola per esteso.** | Il colore rinforza, la parola porta il significato: si stampa in bianco e nero e si legge uguale. |
+| J14 | **Le colonne vuote in tutte le righe spariscono.** | Non sono informazione: sono spazio tolto alle colonne che contano. |
+| J15 | **`evidence` esce dalle tabelle** (resta nell'applicazione e nel JSON). | In una tabella a nove colonne rendeva illeggibile tutto il resto. |
+| J16 | **Intestazioni leggibili** e monospazio sui valori letterali (id, file, componenti). | Le stesse etichette dell'applicazione: chi passa dall'una all'altro ritrova le stesse parole. |
+
+### Aspetto
+
+| # | Modifica | Perché |
+|---|---|---|
+| J17 | **IBM Plex Sans e Mono nel PDF**, gli stessi dell'applicazione. I quattro file sono in `fonts/` (licenza OFL, ridistribuibili). Se la cartella manca si scende su Helvetica senza rumore. | Il documento e l'applicazione devono sembrare la stessa cosa. |
+| J18 | **Niente simboli geometrici.** IBM Plex non ha ■ □ ● ○ ▲, e in un PDF un glifo mancante diventa un rettangolo nero. Verificato sulla tabella dei caratteri del font, non dato per buono: la confidenza usa `•` e `·`, la provenienza una parola. | — |
+| J19 | **Colori dei token**, intestazioni di tabella verde-petrolio, righe alternate, filetti sottili. | — |
+| J20 | **Word: stessi caratteri, stesse tinte, stesso ordine.** Se IBM Plex non è installato sulla macchina di chi apre il file, Word ricade sul carattere di sistema: la struttura resta, cambia la faccia. | È un limite di Word, non aggirabile senza incorporare i font nel documento. |
+| J21 | **Tabelle allineate a sinistra.** | ReportLab le centra di serie: in un documento allineato a sinistra galleggiavano in mezzo alla pagina. |
+| J22 | **Undici casi in più nel collaudo**: ordinamento, le due accezioni di `source`, i puntini, le otto sezioni, e che PDF e Word si costruiscano davvero. | — |
 
 ---
 
@@ -478,10 +523,54 @@ prima di tutto da dove viene ogni riga e quanto è solida.
 
 ---
 
+## J · I documenti (PDF e Word), rifatti
+
+È il PDF, non l'applicazione, quello che finisce in mano al cliente. Era rimasto
+com'era mentre tutto il resto cambiava. `exporter.py` è riscritto.
+
+### Struttura
+
+| # | Modifica | Perché |
+|---|---|---|
+| J1 | **Una sola descrizione, due rese.** `prepara()` costruisce l'elenco dei blocchi del documento; PDF e Word si limitano a disegnarlo. | Prima erano due funzioni lunghe e parallele: ogni aggiunta andava fatta due volte, e avevano già smesso di dire le stesse cose. |
+| J2 | **Copertina** con quanto è stato letto, chi ha risposto, quante righe ci sono, quante hanno un riscontro nel codice, quante sono ad alta confidenza, **quante ha confermato un esperto**, quanti rischi gravi. | Chi riceve il documento deve sapere su cosa sta mettendo il nome prima di leggere la prima riga. |
+| J3 | **«How to read this document»**: la legenda di provenienza, confidenza, conferma e gravità, in copertina. | La distinzione fra fatto e lettura è il perno di tutto il progetto e non era scritta da nessuna parte nel documento. |
+| J4 | **Indice** delle otto sezioni. | — |
+| J5 | **Nuova sezione 7, «Open questions and assumptions»**: le domande per l'esperto e le assunzioni. | Erano nel contratto, erano nell'applicazione, e nel documento non arrivavano affatto. È la parte più utile per chi deve validare. |
+| J6 | **Numerazione cambiata**: §7 «Static Code Evidence» diventa **§8 «Appendix: what the parser found»**, con l'inventario e i conteggi della risoluzione delle chiamate. Le sezioni da 1 a 6 restano dov'erano. | Chi cita «sezione 7» nei propri documenti deve saperlo: è l'unico spostamento. |
+| J7 | **Piè di pagina** con titolo e numero di pagina. | — |
+
+### Contenuto delle tabelle
+
+| # | Modifica | Perché |
+|---|---|---|
+| J8 | **La provenienza si vede**: colonna «Found by» con `parser` o `model`. | Prima un fatto del parser e un'ipotesi del modello erano due righe identiche. |
+| J9 | **La confidenza è un conteggio di puntini** (`•••` `••·` `•··`) invece di una parola in maiuscolo. | Si confronta con l'occhio scorrendo la colonna, e si legge anche stampata in bianco e nero. |
+| J10 | **CORRETTO: `source` significava due cose diverse** e il documento ne mostrava una sola. In `components` e `technical_risks` è la provenienza; in `dependencies` e `data_flows` è l'origine della dipendenza. Il documento scriveva «Found by» su entrambe e trasformava `PKG_BILLING` in `pkg_billing`. Ora lo decide il contratto — nel primo caso il campo ha valori ammessi, nel secondo no. | Difetto trovato guardando il PDF generato, non il codice. Un nome di package abbassato di maiuscole in un documento di consegna è un errore che il cliente nota. |
+| J11 | **Rischi e impatti ordinati per gravità**, più alta per prima. | Un CRITICAL trentesimo, dopo ventinove LOW, è un CRITICAL che nessuno legge. Prima non si poteva ordinare: la gravità era testo libero. |
+| J12 | **Dipendenze ordinate per affidabilità**: prima le `CALL` certe, poi i `PROBABLE_CALL`. | L'ordine dice già quanto fidarsi, senza leggere colonna per colonna. |
+| J13 | **Gravità con fondo tinto e parola per esteso.** | Il colore rinforza, la parola porta il significato: si stampa in bianco e nero e si legge uguale. |
+| J14 | **Le colonne vuote in tutte le righe spariscono.** | Non sono informazione: sono spazio tolto alle colonne che contano. |
+| J15 | **`evidence` esce dalle tabelle** (resta nell'applicazione e nel JSON). | In una tabella a nove colonne rendeva illeggibile tutto il resto. |
+| J16 | **Intestazioni leggibili** e monospazio sui valori letterali (id, file, componenti). | Le stesse etichette dell'applicazione: chi passa dall'una all'altro ritrova le stesse parole. |
+
+### Aspetto
+
+| # | Modifica | Perché |
+|---|---|---|
+| J17 | **IBM Plex Sans e Mono nel PDF**, gli stessi dell'applicazione. I quattro file sono in `fonts/` (licenza OFL, ridistribuibili). Se la cartella manca si scende su Helvetica senza rumore. | Il documento e l'applicazione devono sembrare la stessa cosa. |
+| J18 | **Niente simboli geometrici.** IBM Plex non ha ■ □ ● ○ ▲, e in un PDF un glifo mancante diventa un rettangolo nero. Verificato sulla tabella dei caratteri del font, non dato per buono: la confidenza usa `•` e `·`, la provenienza una parola. | — |
+| J19 | **Colori dei token**, intestazioni di tabella verde-petrolio, righe alternate, filetti sottili. | — |
+| J20 | **Word: stessi caratteri, stesse tinte, stesso ordine.** Se IBM Plex non è installato sulla macchina di chi apre il file, Word ricade sul carattere di sistema: la struttura resta, cambia la faccia. | È un limite di Word, non aggirabile senza incorporare i font nel documento. |
+| J21 | **Tabelle allineate a sinistra.** | ReportLab le centra di serie: in un documento allineato a sinistra galleggiavano in mezzo alla pagina. |
+| J22 | **Undici casi in più nel collaudo**: ordinamento, le due accezioni di `source`, i puntini, le otto sezioni, e che PDF e Word si costruiscano davvero. | — |
+
+---
+
 ## Cosa NON è stato cambiato
 
-- La struttura di `exporter.py` (PDF e Word): correzioni chirurgiche soltanto
-  (C2, C4, D1, D10, D11). Impaginazione, stili e sezioni sono rimasti quelli.
+- Le sezioni da 1 a 6 dei documenti restano dov'erano e come si chiamavano.
+  L'unico spostamento è l'ex §7, diventata §8 (vedi J6).
 - **Le chiavi restano nella barra laterale**: è un prototipo, va bene così. Da
   rivedere solo se l'app viene esposta a più utenti.
 - **`Quality first` resta il predefinito**: la catena parte dai modelli grandi.

@@ -22,7 +22,7 @@ mettere nell'ambiente: `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`,
 | `app.py` | Interfaccia Streamlit, analisi statica, orchestrazione |
 | `model_chain.py` | Scoperta, prova e scalata dei modelli (impianto di Nuvia) |
 | `contract.py` | Il contratto JSON: prompt, schema, riparazione, normalizzazione |
-| `exporter.py` | Generazione PDF e Word |
+| `exporter.py` | PDF e Word: una descrizione, due rese |
 | `diagrams.py` | I quattro diagrammi ricavati dai dati validati |
 | `mermaid_render.py` | Disegno dei diagrammi, in locale se possibile |
 | `test_catena.py` | Collaudo, senza rete e senza chiavi |
@@ -79,7 +79,7 @@ La scheda *Downloads* dice sempre quale dei due sta per succedere.
 ## Collaudo
 
 ```bash
-python test_catena.py     # 72 casi, nessuna rete, nessuna chiave, nessun costo
+python test_catena.py     # 83 casi, nessuna rete, nessuna chiave, nessun costo
 ```
 
 ## Documentazione

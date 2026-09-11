@@ -176,7 +176,7 @@ database, nessuno stato sul server oltre alla sessione.
 | `diagrams.py` | I quattro diagrammi ricavati dai dati strutturati |
 | `mermaid_render.py` | Mermaid → PNG, in locale (mmdc) o come ricaduta remota |
 | `exporter.py` | PDF (ReportLab) e Word (python-docx) |
-| `test_catena.py` | 72 casi, senza rete, senza chiavi, senza costi |
+| `test_catena.py` | 83 casi, senza rete, senza chiavi, senza costi |
 | `guida_pdf.py` | Rigenera questo documento in PDF (servizio, non serve all'app) |
 | `.streamlit/config.toml` | Tema di Streamlit, con gli stessi colori di `ui.py` |
 
@@ -423,11 +423,20 @@ container con un file di configurazione Puppeteer temporaneo, rispetta
 `PUPPETEER_EXECUTABLE_PATH`, e mette in cache sull'impronta del codice (PDF e
 Word chiedono gli stessi quattro diagrammi).
 
-`exporter.py` costruisce PDF in A4 orizzontale e Word con tabelle generate
-automaticamente dalle chiavi dei dizionari — motivo per cui il contratto
-uniforme migliora anche gli export. Le immagini vengono inserite **rispettando
-le proporzioni lette dall'intestazione del PNG** (24 byte, nessuna dipendenza in
-più) e adattate al riquadro disponibile.
+`exporter.py` prepara **una sola descrizione** del documento — copertina,
+titoli, prosa, tabelle, diagrammi — e la disegna due volte, in PDF (ReportLab,
+A4 orizzontale, IBM Plex) e in Word (python-docx). Prima erano due funzioni
+parallele che avevano già smesso di dire le stesse cose.
+
+Le tabelle portano la provenienza di ogni riga (`parser` o `model`), la
+confidenza come puntini e il segno di conferma dell'esperto; i rischi escono
+ordinati per gravità e le dipendenze per affidabilità. Le immagini rispettano
+**le proporzioni lette dall'intestazione del PNG** (24 byte, nessuna dipendenza
+in più).
+
+Il documento ha otto sezioni: sintesi, logica di business, architettura, dati,
+rischi, diagrammi, **domande aperte e assunzioni**, e in appendice quello che ha
+trovato il parser.
 
 ## Stato, cache e costi
 
@@ -442,7 +451,7 @@ Streamlit riesegue lo script intero a ogni interazione. Di conseguenza:
 
 ## Collaudo
 
-`python test_catena.py` — 72 casi, nessuna rete, nessuna chiave, nessun costo.
+`python test_catena.py` — 83 casi, nessuna rete, nessuna chiave, nessun costo.
 Il provider è finto: si dichiara quali modelli rispondono e come, e si osserva il
 comportamento. Copre scoperta e ordinamento, scalata, riprova selettiva, memoria,
 messaggi nelle due lingue, tetti temporali, adattamento dei parametri,
@@ -468,3 +477,6 @@ e costruzione dei diagrammi.
   tenuto quando c'è.
 - **Il consolidamento vede l'inventario, non il codice.** Può collegare due nomi
   già trovati, non scoprire quello che nessun lotto ha visto.
+- **Il Word usa IBM Plex solo se è installato** sulla macchina di chi lo apre:
+  Word non incorpora i caratteri. La struttura e i colori restano, cambia la
+  faccia. Nel PDF il problema non c'è, i font sono dentro il file.

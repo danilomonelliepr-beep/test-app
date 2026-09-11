@@ -597,6 +597,61 @@ P("l'etichetta sull'arco resta quella che l'autore ha scritto",
 P("le frecce con lettera (--o, --x) non vengono scambiate per etichette",
   contract.pulisci_mermaid(["flowchart TD", '  A["x"] --o B["y"]']).endswith('--o B["y"]'))
 
+
+# =============================================================================
+# I DOCUMENTI
+# =============================================================================
+import exporter
+
+doc = contract.normalizza({
+    "executive_summary": "S.", "application_purpose": "P.",
+    "technical_risks": [
+        {"risk_type": "SELECT_ALL", "severity": "LOW", "description": "d",
+         "affected_component": "a.pkb", "source": "STATIC_ANALYSIS", "confidence": "HIGH"},
+        {"risk_type": "HARDCODED_CREDENTIAL", "severity": "CRITICAL", "description": "d",
+         "affected_component": "b.pkb", "source": "STATIC_ANALYSIS", "confidence": "HIGH"},
+        {"risk_type": "DYNAMIC_SQL", "severity": "HIGH", "description": "d",
+         "affected_component": "c.pkb", "source": "LLM_ANALYSIS", "confidence": "MEDIUM"}],
+    "dependencies": [
+        {"source": "PKG_A", "target": "PKG_B", "dependency_type": "PROBABLE_CALL", "confidence": "LOW"},
+        {"source": "PKG_A", "target": "PKG_C", "dependency_type": "CALL", "confidence": "HIGH"}],
+    "validation_questions": [{"question": "Why 30 days?", "addressed_to": "business"}],
+})
+meta_doc = {"file_count": 1, "total_line_count": 10, "languages": ["Oracle PL/SQL"],
+            "detected_tables": [], "components": [], "dependencies": [], "interfaces": [],
+            "data_objects": [], "local_risks": [], "files": []}
+
+P("i rischi escono in ordine di gravità, non nell'ordine in cui sono arrivati",
+  [r["severity"] for r in exporter._ordina("technical_risks", doc["technical_risks"])]
+  == ["CRITICAL", "HIGH", "LOW"])
+P("le dipendenze certe vengono prima dei sospetti",
+  [d["dependency_type"] for d in exporter._ordina("dependencies", doc["dependencies"])]
+  == ["CALL", "PROBABLE_CALL"])
+
+P("«source» nei rischi è la provenienza e si legge «parser»",
+  exporter._valore("technical_risks", "source", doc["technical_risks"][0]) == "parser")
+P("«source» nelle dipendenze è un nome di componente e resta tale",
+  exporter._valore("dependencies", "source", doc["dependencies"][0]) == "PKG_A"
+  and exporter._etichetta("dependencies", "source") == "From")
+P("la confidenza diventa puntini che si leggono anche in bianco e nero",
+  exporter._valore("technical_risks", "confidence", doc["technical_risks"][0]) == "\u2022\u2022\u2022")
+
+preparato = exporter.prepara(doc, meta_doc, "Google Gemini", "gemini-3.7-flash")
+titoli = [b[1] for b in preparato["blocchi"] if b[0] == "titolo"]
+P(f"il documento ha otto sezioni, comprese le domande per l'esperto ({len(titoli)})",
+  len(titoli) == 8 and any("Open questions" in t for t in titoli))
+P("le domande per l'esperto arrivano nel documento",
+  any(b[0] == "tabella" and b[1] == "validation_questions" for b in preparato["blocchi"]))
+P("la copertina dichiara quante righe ha confermato un esperto",
+  any("confirmed by a domain expert" in k for k, _ in preparato["copertina"]))
+
+pdf = exporter.generate_pdf_report(doc, meta_doc, "Google Gemini", "gemini-3.7-flash")
+docx = exporter.generate_docx_report(doc, meta_doc, "Google Gemini", "gemini-3.7-flash")
+P(f"il PDF si costruisce ({len(pdf)//1024} KB)", pdf[:5] == b"%PDF-" and len(pdf) > 3000)
+P(f"il Word si costruisce ({len(docx)//1024} KB)", docx[:2] == b"PK" and len(docx) > 3000)
+P("i caratteri del documento sono quelli dell'applicazione",
+  exporter._registra_font() and exporter.FONT["corpo"] == "PlexSans")
+
 print()
 print(f"{sum(ESITI)}/{len(ESITI)} casi passati")
 sys.exit(0 if all(ESITI) else 1)

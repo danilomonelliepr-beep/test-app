@@ -260,6 +260,12 @@ def costruisci(risultato: Dict[str, Any]) -> Dict[str, str]:
 
 MINIMO_RIGHE = 3  # sotto questa soglia il disegno del modello non dice nulla
 
+# Provenienza di ogni diagramma, per dirlo accanto al disegno invece che nel
+# pannello degli avvisi: "modello", "dati", oppure "" quando non c'è.
+FONTI = {"modello": "From the model",
+         "dati": "Built from the validated data",
+         "": "No diagram"}
+
 
 def arricchisci(risultato: Dict[str, Any]) -> Dict[str, Any]:
     """Mette accanto a ogni diagramma quello costruito dai dati e sceglie quale
@@ -268,21 +274,30 @@ def arricchisci(risultato: Dict[str, Any]) -> Dict[str, Any]:
     dichiarata negli avvisi di contratto."""
     dai_dati = costruisci(risultato)
     risultato["_diagrammi_dai_dati"] = dai_dati
-    risultato.setdefault("_diagrammi_dal_modello", {})
+    memoria = risultato.setdefault("_diagrammi_dal_modello", {})
+    fonte = risultato.setdefault("_diagrammi_fonte", {})
     avvisi = list(risultato.get("contract_warnings") or [])
     for campo, generato in dai_dati.items():
-        del_modello = str(risultato.get(campo) or "")
-        risultato["_diagrammi_dal_modello"][campo] = del_modello
+        # Idempotente: chiamata una seconda volta (dopo il consolidamento, che
+        # aggiunge archi al call graph) NON deve prendere per «versione del
+        # modello» il disegno che avevamo costruito noi al primo giro.
+        del_modello = memoria.get(campo, str(risultato.get(campo) or ""))
+        memoria[campo] = del_modello
         magro = len(del_modello.splitlines()) < MINIMO_RIGHE
-        if not magro:
-            continue
         avvisi = [a for a in avvisi if not a.startswith(campo + ":")]
+        if not magro:
+            fonte[campo] = "modello"
+            continue
         if generato:
             risultato[campo] = generato
-            avvisi.append(
-                f"{campo}: {'too thin' if del_modello.strip() else 'not returned'} in the model's "
-                "answer — showing one built from the validated data instead")
+            fonte[campo] = "dati"
+            # NON è un avviso di contratto. Costruire il diagramma dai dati è
+            # il funzionamento previsto, non un guasto da segnalare in rosso:
+            # nel pannello degli avvisi sembrava un errore, e infatti è stato
+            # segnalato come tale. La provenienza si dice dove serve — accanto
+            # al disegno — e chi vuole l'altra versione ha l'interruttore.
         else:
+            fonte[campo] = ""
             avvisi.append(
                 f"{campo}: no diagram — neither the model nor the tables have enough to draw one")
     risultato["contract_warnings"] = avvisi

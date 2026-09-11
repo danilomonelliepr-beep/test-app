@@ -809,3 +809,165 @@ def unisci_righe(nome: str, *liste: List[Dict[str, Any]]) -> List[Dict[str, Any]
 
 def statistiche(risultato: Dict[str, Any]) -> Dict[str, int]:
     return {nome: len(risultato.get(nome, []) or []) for nome in CAMPI}
+
+
+# =============================================================================
+# LA PASSATA DI CONSOLIDAMENTO
+# Quando il codice è troppo per una chiamata sola si va a lotti, e i lotti non
+# si vedono fra loro: ogni lotto scrive la propria sintesi come se fosse tutta
+# l'applicazione, e una dipendenza fra un file del lotto 1 e uno del lotto 3
+# non la vede nessuno, perché nessuno ha guardato i due file insieme.
+#
+# Qui si rimedia con UNA chiamata in più che NON contiene codice sorgente: solo
+# l'inventario di quello che i lotti hanno trovato. Costa pochissimo (poche
+# migliaia di token contro le centinaia di migliaia dell'analisi) e chiude il
+# buco che pesa di più: la visione d'insieme.
+#
+# La regola che tiene tutto in piedi: qui il modello non può SCOPRIRE niente.
+# Può solo collegare, riassumere e chiedere. Nomi nuovi non ne esistono.
+# =============================================================================
+def _inventario(risultato: Dict[str, Any], nome: str, campi: List[str], massimo: int) -> List[str]:
+    fuori = []
+    for riga in (risultato.get(nome) or [])[:massimo]:
+        pezzi = [_testo(riga.get(c, "")).strip() for c in campi]
+        pezzi = [p for p in pezzi if p]
+        if pezzi:
+            fuori.append(" · ".join(pezzi))
+    return fuori
+
+
+def prompt_consolidamento(risultato: Dict[str, Any], lotti: List[List[str]]) -> str:
+    """Il prompt della passata finale. Riceve l'inventario, non il codice."""
+    mappa_lotti = "\n".join(
+        f"  batch {i}: " + ", ".join(nomi[:25]) + (" …" if len(nomi) > 25 else "")
+        for i, nomi in enumerate(lotti, start=1))
+    sezioni = {
+        "COMPONENTS": _inventario(risultato, "components", ["component_name", "component_type", "source_file"], 300),
+        "DEPENDENCIES ALREADY KNOWN": _inventario(risultato, "dependencies", ["source", "target", "dependency_type"], 300),
+        "INTERFACES": _inventario(risultato, "interfaces", ["name", "interface_type", "direction"], 120),
+        "DATA OBJECTS": _inventario(risultato, "data_objects", ["object_name", "operation", "source_file"], 300),
+        "BUSINESS PROCESSES": _inventario(risultato, "business_processes", ["process_name", "trigger", "outcome"], 60),
+        "BUSINESS RULES": _inventario(risultato, "business_rules", ["rule_name", "condition", "source_file"], 120),
+        "TECHNICAL RISKS": _inventario(risultato, "technical_risks", ["risk_type", "severity", "affected_component"], 120),
+    }
+    corpo = "\n\n".join(f"{titolo}\n" + ("\n".join("  - " + r for r in righe) or "  (none)")
+                        for titolo, righe in sezioni.items())
+    parziali = "\n\n".join(t for t in [
+        risultato.get("executive_summary", ""), risultato.get("technical_notes", "")] if t.strip())
+
+    return f"""The codebase was analysed in {len(lotti)} separate batches, so no single pass
+ever saw the whole application. Below is the complete inventory of what those
+batches found. You are NOT given the source code this time.
+
+FILES PER BATCH
+{mappa_lotti}
+
+{corpo}
+
+PER-BATCH SUMMARIES WRITTEN SO FAR (to be replaced by one coherent summary)
+{parziali or "(none)"}
+
+YOUR TASK — three things, nothing else.
+1. Write ONE executive summary and ONE application purpose for the WHOLE
+   application, replacing the per-batch ones. Same for technical notes.
+2. Find the links that no single batch could see: a component in one batch that
+   calls, feeds or reads something listed in another batch. Report them in
+   `cross_batch_dependencies`.
+3. Ask what a human must still confirm about the application as a whole.
+
+HARD RULES
+· You may only use names that appear verbatim in the inventory above. Inventing
+  a component, file, table or system is the single worst thing you can do here,
+  because there is no source code left for anyone to check it against.
+· A link is worth reporting only if both ends are in the inventory AND they come
+  from different batches. Do not repeat dependencies already listed.
+· If you find no cross-batch link, return an empty list. That is a correct answer.
+· Set confidence to HIGH only when the two names are unmistakably the same thing
+  (identical identifier). Similar names are MEDIUM at best.
+
+Return ONE JSON object, nothing else, no markdown fences:
+{{
+  "executive_summary": "<8-15 lines about the whole application>",
+  "application_purpose": "<2-4 lines, business language>",
+  "technical_notes": "<what a migration team must know, whole application>",
+  "cross_batch_dependencies": [
+    {{ "source": "<name from the inventory>", "target": "<name from the inventory>",
+       "dependency_type": "CROSS_BATCH_CALL|CROSS_BATCH_DATA|CROSS_BATCH_INTERFACE",
+       "description": "<why you think they are linked>",
+       "confidence": "LOW|MEDIUM|HIGH",
+       "evidence": "<which inventory entries you matched>" }}
+  ],
+  "validation_questions": [
+    {{ "question_id": "", "question": "<question about the application as a whole>",
+       "why_it_matters": "<what changes depending on the answer>",
+       "related_ids": "", "addressed_to": "<business|DBA|operations|architect>" }}
+  ]
+}}
+"""
+
+
+def schema_consolidamento() -> Dict[str, Any]:
+    dip = {c: {"type": "STRING"} for c in CAMPI["dependencies"]["campi"]}
+    dom = {c: {"type": "STRING"} for c in CAMPI["validation_questions"]["campi"]}
+    return {"type": "OBJECT", "properties": {
+        "executive_summary": {"type": "STRING"},
+        "application_purpose": {"type": "STRING"},
+        "technical_notes": {"type": "STRING"},
+        "cross_batch_dependencies": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": dip}},
+        "validation_questions": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": dom}},
+    }, "required": ["executive_summary", "application_purpose", "cross_batch_dependencies"]}
+
+
+def _nomi_noti(risultato: Dict[str, Any]) -> set:
+    nomi = set()
+    for nome, campi in [("components", ["component_name"]), ("data_objects", ["object_name"]),
+                        ("interfaces", ["name"]), ("dependencies", ["source", "target"])]:
+        for riga in risultato.get(nome) or []:
+            for c in campi:
+                v = _testo(riga.get(c, "")).strip().lower()
+                if v:
+                    nomi.add(v)
+    return nomi
+
+
+def applica_consolidamento(risultato: Dict[str, Any], grezzo: Any) -> Dict[str, Any]:
+    """Innesta la passata finale sul risultato unito, verificando ogni nome.
+
+    La verifica non è un di più: il modello qui non ha davanti il codice, quindi
+    un nome inventato non lo smentirebbe nessuno. Un collegamento con un capo
+    che non esiste nell'inventario si butta, e si scrive che si è buttato."""
+    avvisi = list(risultato.get("contract_warnings") or [])
+    if not isinstance(grezzo, dict):
+        avvisi.append("consolidation: unusable answer, per-batch summaries kept")
+        risultato["contract_warnings"] = avvisi
+        return risultato
+
+    for campo in CAMPI_TESTO:
+        nuovo = _testo(grezzo.get(campo)).strip()
+        if nuovo:
+            risultato[campo] = nuovo
+
+    noti = _nomi_noti(risultato)
+    candidate = grezzo.get("cross_batch_dependencies") or []
+    tenute, scartate = [], 0
+    for riga in normalizza_righe("dependencies", candidate):
+        sorgente = _testo(riga.get("source")).strip().lower()
+        destinazione = _testo(riga.get("target")).strip().lower()
+        if sorgente in noti and destinazione in noti:
+            tenute.append(riga)
+        else:
+            scartate += 1
+    if tenute:
+        risultato["dependencies"] = unisci_righe("dependencies", risultato.get("dependencies", []), tenute)
+        avvisi.append(f"consolidation: {len(tenute)} cross-batch link(s) added")
+    if scartate:
+        avvisi.append(f"consolidation: {scartate} cross-batch link(s) dropped — "
+                      "at least one end was not in the inventory")
+
+    domande = normalizza_righe("validation_questions", grezzo.get("validation_questions") or [])
+    if domande:
+        risultato["validation_questions"] = unisci_righe(
+            "validation_questions", risultato.get("validation_questions", []), domande)
+
+    risultato["contract_warnings"] = avvisi
+    return numera_id(risultato)

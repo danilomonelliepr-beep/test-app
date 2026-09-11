@@ -89,6 +89,34 @@ CFG_BASE: Dict[str, Any] = {
 
 PROMPT_PROVA = "Rispondi con una sola parola: OK."
 
+# ═══ QUANTO DEVE PENSARE IL MODELLO ═══════════════════════════════════════
+# È la leva che sposta di più il tempo di risposta, molto più della scelta fra
+# un modello e l'altro: lo stesso flash con il ragionamento alto ci mette
+# minuti dove con quello basso ci mette secondi.
+#
+# Ma NON tutti i modelli accettano tutti i livelli: alcuni rifiutano i livelli
+# bassi con un 400. Per questo il livello scelto è un PUNTO DI PARTENZA, non un
+# ordine: se il modello lo rifiuta si sale di un gradino, si ricorda per QUEL
+# modello, e la volta dopo si parte già giusti. Chi sceglie «veloce» ottiene il
+# più veloce che quel modello sa fare, non un errore.
+LIVELLI = ["minimal", "low", "medium", "high"]
+
+
+def _su_di_uno(livello: str) -> Optional[str]:
+    try:
+        i = LIVELLI.index(livello)
+    except ValueError:
+        return "medium"
+    return LIVELLI[i + 1] if i + 1 < len(LIVELLI) else None
+
+
+def _almeno(scelto: str, minimo: Optional[str]) -> str:
+    """Il livello davvero usabile: quello scelto, alzato al minimo che quel
+    modello ha già dimostrato di pretendere."""
+    if not minimo:
+        return scelto
+    return scelto if LIVELLI.index(scelto) >= LIVELLI.index(minimo) else minimo
+
 # =============================================================================
 # I GUASTI, IN DUE FAMIGLIE
 # È la distinzione che fa funzionare tutto il resto: un guasto che può passare
@@ -400,6 +428,9 @@ class GeminiProvider(Provider):
             "maxOutputTokens": int(o.get("max_token", CFG_BASE["max_token"])),
             "temperature": 0,
         }
+        if not adatta.get("no_thinking"):
+            cfg["thinkingConfig"] = {
+                "thinkingLevel": _almeno(o.get("ragionamento") or "low", adatta.get("thinking_min"))}
         if o.get("json_mode") and not adatta.get("no_json_mode"):
             cfg["responseMimeType"] = "application/json"
             # Lo schema imposto è la garanzia più forte sui nomi dei campi, ma
@@ -456,10 +487,20 @@ class GeminiProvider(Provider):
             # chiave sana. Quindi il corpo si legge PRIMA di dare la colpa.
             if re.search(r"context|token count|too (?:large|long)|exceeds", det, re.I):
                 raise ErroreModello("contesto", det)
-            if re.search(r"schema|responseMimeType|thinking|generationConfig|json", det, re.I):
+            gia = dict(o.get("adatta") or {})
+            if re.search(r"thinking", det, re.I):
+                # IL 400 SUL THINKING. Questo modello non accetta il livello
+                # chiesto: si sale di un gradino e si riprova. Non è la chiave,
+                # non è il modello: è il parametro. Trattarlo come «chiave non
+                # valida» scarterebbe il modello migliore della catena con la
+                # diagnosi sbagliata.
+                usato = _almeno(o.get("ragionamento") or "low", gia.get("thinking_min"))
+                su = _su_di_uno(usato)
+                patch = {"thinking_min": su} if su else {"no_thinking": True}
+                raise ErroreModello("parametro", det, adatta=patch)
+            if re.search(r"schema|responseMimeType|generationConfig|json", det, re.I):
                 # Si scende di un gradino per volta: prima si toglie lo schema,
                 # e solo se non basta si rinuncia anche al modo JSON.
-                gia = dict(o.get("adatta") or {})
                 patch = {"no_json_mode": True} if gia.get("no_schema") else {"no_schema": True}
                 raise ErroreModello("parametro", det, adatta=patch)
             raise ErroreModello("badkey", det)
@@ -515,11 +556,16 @@ class ClaudeProvider(Provider):
 
     def chiama(self, modello: str, prompt: str, **o: Any) -> Dict[str, Any]:
         tetto = float(o.get("tetto_s", CFG_BASE["vera_s"]))
+        adatta = dict(o.get("adatta") or {})
+        ragionamento = _almeno(o.get("ragionamento") or "low", adatta.get("thinking_min"))
+        pensa = ragionamento in ("medium", "high") and not adatta.get("no_thinking")
         messaggi: List[Dict[str, Any]] = [{"role": "user", "content": prompt}]
         # PREFILL: si apre la risposta con «{» al posto del modello. Costa
         # zero e toglie alla radice preamboli e recinti markdown, che erano la
         # prima causa di JSON non parsabile su questo provider.
-        prefill = "{" if o.get("json_mode") else ""
+        # Con il ragionamento esteso il prefill non è ammesso, e si rinuncia:
+        # le difese a valle (estrai_json, ripara_troncato) bastano.
+        prefill = "{" if (o.get("json_mode") and not pensa) else ""
         if prefill:
             messaggi.append({"role": "assistant", "content": prefill})
         corpo: Dict[str, Any] = {
@@ -530,6 +576,15 @@ class ClaudeProvider(Provider):
         }
         if o.get("sistema"):
             corpo["system"] = o["sistema"]
+        if pensa:
+            # Il budget di ragionamento si scala DENTRO max_tokens, quindi il
+            # tetto va alzato: altrimenti il modello pensa e non gli resta
+            # spazio per scrivere. E con il thinking la temperatura dev'essere
+            # quella di serie, non zero.
+            budget = 4000 if ragionamento == "medium" else 10000
+            corpo["thinking"] = {"type": "enabled", "budget_tokens": budget}
+            corpo["max_tokens"] = max(int(corpo["max_tokens"]), budget + 8000)
+            corpo.pop("temperature", None)
 
         def fai():
             return requests.post(f"{self.base}/messages", headers=self._testate(), json=corpo,
@@ -568,7 +623,9 @@ class ClaudeProvider(Provider):
         if r.status_code == 400:
             if re.search(r"context|too (?:large|long)|max.*token|exceed", det, re.I):
                 raise ErroreModello("contesto", det)
-            if re.search(r"temperature|thinking|top_p|unexpected", det, re.I):
+            if re.search(r"thinking|budget_tokens", det, re.I):
+                raise ErroreModello("parametro", det, adatta={"no_thinking": True})
+            if re.search(r"temperature|top_p|unexpected", det, re.I):
                 raise ErroreModello("parametro", det, adatta={"no_temperature": True})
             raise ErroreModello("badkey", det)
         raise ErroreModello("busy" if r.status_code >= 500 else "badkey", det)
@@ -660,6 +717,14 @@ class AzureProvider(Provider):
             corpo["temperature"] = 0
         if o.get("json_mode") and not adatta.get("no_json_mode"):
             corpo["response_format"] = {"type": "json_object"}
+        # `reasoning_effort` esiste solo sui modelli che ragionano: mandarlo a
+        # un gpt-4o costa un 400 e un giro a vuoto. Si guarda il nome prima, e
+        # l'adattamento resta come rete per i nomi che non riconosciamo.
+        if (re.search(r"\b(o\d|gpt-5|reason)", modello, re.I)
+                and not adatta.get("no_reasoning")):
+            corpo["reasoning_effort"] = _almeno(o.get("ragionamento") or "low",
+                                                adatta.get("thinking_min"))
+            corpo.pop("temperature", None)
         url = f"{self.endpoint}/openai/deployments/{modello}/chat/completions?api-version={self.api_version}"
 
         def fai():
@@ -669,7 +734,7 @@ class AzureProvider(Provider):
             r = con_scadenza(fai, tetto)
         except requests.exceptions.RequestException as e:
             raise self._rete(e)
-        self._stato(r)
+        self._stato(r, o)
         j = r.json()
         scelta = (j.get("choices") or [{}])[0]
         testo = ((scelta.get("message") or {}).get("content")) or ""
@@ -681,7 +746,8 @@ class AzureProvider(Provider):
             raise ErroreModello("vuota", str(scelta.get("finish_reason") or ""))
         return {"testo": testo, "uso": j.get("usage") or {}}
 
-    def _stato(self, r) -> None:
+    def _stato(self, r, o: Optional[Dict[str, Any]] = None) -> None:
+        o = o or {}
         if r.ok:
             return
         det = r.text[:600]
@@ -704,6 +770,16 @@ class AzureProvider(Provider):
                 raise ErroreModello("parametro", det, adatta={"max_completion_tokens": True})
             if re.search(r"temperature", det, re.I):
                 raise ErroreModello("parametro", det, adatta={"no_temperature": True})
+            if re.search(r"reasoning_effort|reasoning", det, re.I):
+                gia = dict(o.get("adatta") or {})
+                usato = _almeno(o.get("ragionamento") or "low", gia.get("thinking_min"))
+                su = _su_di_uno(usato)
+                # Il valore può essere rifiutato perché è troppo basso per quel
+                # modello (si sale), oppure perché il modello non ragiona
+                # affatto (si toglie del tutto).
+                patch = ({"thinking_min": su} if su and re.search(r"value|invalid|support", det, re.I)
+                         else {"no_reasoning": True})
+                raise ErroreModello("parametro", det, adatta=patch)
             if re.search(r"response_format|json_object|json_schema", det, re.I):
                 raise ErroreModello("parametro", det, adatta={"no_json_mode": True})
             raise ErroreModello("badkey", det)
@@ -725,7 +801,8 @@ ALIAS = {"gemini": "Google Gemini", "claude": "Anthropic Claude",
 # =============================================================================
 class CatenaModelli:
     def __init__(self, provider: str, chiave: str, endpoint: str = "", api_version: str = "",
-                 deployment: str = "", preferenza: str = "qualita", lingua: str = "it",
+                 deployment: str = "", preferenza: str = "qualita",
+                 ragionamento: str = "low", lingua: str = "it",
                  cfg: Optional[Dict[str, Any]] = None, memoria: Optional[MemoriaFile] = None,
                  log: Optional[Callable[[str], None]] = None):
         nome = ALIAS.get(str(provider).lower(), provider)
@@ -735,6 +812,7 @@ class CatenaModelli:
         self.C.update(cfg or {})
         self.lingua = "en" if lingua == "en" else "it"
         self.preferenza = "velocita" if preferenza == "velocita" else "qualita"
+        self.ragionamento = ragionamento if ragionamento in LIVELLI else "low"
         self.log = log or (lambda s: None)
         self.memoria = memoria if memoria is not None else MemoriaFile()
         self.diario: List[str] = []
@@ -786,6 +864,7 @@ class CatenaModelli:
     def _chiama_uno(self, modello: str, prompt: str, **o: Any) -> Dict[str, Any]:
         spazio = self.p.spazio()
         o = dict(o)
+        o.setdefault("ragionamento", self.ragionamento)
         o["adatta"] = self.memoria.leggi_adatta(spazio, modello)
         try:
             return self.p.chiama(modello, prompt, **o)
@@ -809,11 +888,16 @@ class CatenaModelli:
         for m in catena:
             if time.time() - t0 >= self.C["prova_totale_s"]:
                 break
-            for tentativo in range(2):
+            tentativo, adattamenti = 0, 0
+            while True:
                 t1 = time.time()
                 try:
+                    # La prova va al livello di ragionamento più basso: è una
+                    # domanda da due parole, e farla pensare vanificherebbe il
+                    # tetto dei cinque secondi che la prova esiste per rispettare.
                     self._chiama_uno(m, PROMPT_PROVA, tetto_s=self.C["prova_s"],
-                                     max_token=self.C["max_token_prova"], json_mode=False)
+                                     max_token=self.C["max_token_prova"], json_mode=False,
+                                     ragionamento="minimal")
                     self._nota(f"  {m}: risponde ({int((time.time()-t1)*1000)} ms)")
                     self.memoria.scrivi_buono(self.p.spazio(), m)
                     return {"ok": True, "modello": m}
@@ -828,9 +912,18 @@ class CatenaModelli:
                     self._nota(f"  {m}: {e.causa} ({int((time.time()-t1)*1000)} ms)")
                     if e.causa in NON_SCENDERE:
                         return {"ok": False, "causa": e.causa}
-                    puo_riprovare = (e.causa in RIPROVA and tentativo == 0
-                                     and (time.time() - t0) < self.C["prova_totale_s"] - self.C["prova_s"])
-                    if puo_riprovare:
+                    resta = time.time() - t0 < self.C["prova_totale_s"] - self.C["prova_s"]
+                    # UN ADATTAMENTO NON È UN FALLIMENTO. Il modello ha detto
+                    # quale parametro non gli va bene: la richiesta è cambiata,
+                    # quindi il tentativo successivo è una cosa diversa dalla
+                    # precedente e non deve consumare la seconda chance, che
+                    # serve ai guasti veri. La scala del ragionamento ha tre
+                    # gradini: con due soli tentativi non arriverebbe in cima.
+                    if e.causa == "parametro" and adattamenti < 3 and resta:
+                        adattamenti += 1
+                        continue
+                    if e.causa in RIPROVA and tentativo == 0 and resta:
+                        tentativo += 1
                         continue
                     break
                 except Exception as e:  # noqa: BLE001
@@ -847,13 +940,15 @@ class CatenaModelli:
         da = max(0, catena.index(buono)) if buono in catena else 0
         ultima = "nessuno"
         for m in catena[da:]:
-            for tentativo in range(int(self.C["tentativi_vera"])):
+            tentativo, adattamenti = 0, 0
+            while tentativo < int(self.C["tentativi_vera"]):
                 t1 = time.time()
                 try:
                     r = self._chiama_uno(m, prompt, tetto_s=self.C["vera_s"],
                                          max_token=o.get("max_token", self.C["max_token"]),
                                          json_mode=o.get("json_mode", False),
-                                         schema=o.get("schema"), sistema=o.get("sistema"))
+                                         schema=o.get("schema"), sistema=o.get("sistema"),
+                                         ragionamento=o.get("ragionamento", self.ragionamento))
                     ms = int((time.time() - t1) * 1000)
                     self._nota(f"  {m}: risposta in {ms} ms ({len(r['testo'])} caratteri)")
                     self.memoria.scrivi_buono(self.p.spazio(), m)
@@ -868,11 +963,17 @@ class CatenaModelli:
                         if tentativo == int(self.C["tentativi_vera"]) - 1 or not o.get("json_mode"):
                             return Risposta(e.parziale, m, True, int((time.time() - t1) * 1000), self.nome_provider)
                     if e.causa == "parametro":
-                        continue  # adattato e ricordato: si riprova subito
+                        # Adattato e ricordato: si riprova con la richiesta
+                        # corretta, senza consumare i tentativi veri.
+                        adattamenti += 1
+                        if adattamenti <= 4:
+                            continue
+                        break
                     if e.causa in CAMBIA:
                         break
                     if e.causa in RIPROVA:
-                        time.sleep(self.C["pausa_base_s"] * (tentativo + 1))
+                        tentativo += 1
+                        time.sleep(self.C["pausa_base_s"] * tentativo)
                         continue
                     break
                 except Exception as e:  # noqa: BLE001
@@ -924,6 +1025,8 @@ def _main() -> int:  # pragma: no cover
     ap.add_argument("--modelli", action="store_true", help="stampa solo la catena scoperta")
     ap.add_argument("--prova", action="store_true", help="fa solo la prova di contatto")
     ap.add_argument("--velocita", action="store_true", help="preferisci i modelli veloci (regola Nuvia)")
+    ap.add_argument("--ragionamento", default="low", choices=LIVELLI,
+                    help="quanto deve pensare il modello (si adatta da solo se lo rifiuta)")
     a = ap.parse_args()
 
     nome = ALIAS.get(a.provider.lower(), a.provider)
@@ -941,6 +1044,7 @@ def _main() -> int:  # pragma: no cover
         endpoint=os.environ.get("AZURE_OPENAI_ENDPOINT", ""),
         deployment=os.environ.get("AZURE_OPENAI_DEPLOYMENT", ""),
         preferenza="velocita" if a.velocita else "qualita",
+        ragionamento=a.ragionamento,
         log=lambda s: print(s, flush=True),
     )
     if a.modelli:

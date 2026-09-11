@@ -1,10 +1,11 @@
 # Modifiche — Legacy Application Knowledge Extractor
 
-Versione contratto JSON: **2.0** · Collaudo: `python test_catena.py` → 45/45
+Versione contratto JSON: **2.0** · Collaudo: `python test_catena.py` → 64/64
 
 Quattro blocchi: **A** la catena modelli presa da Nuvia, **B** il contratto JSON,
 **C** difetti trovati per strada e robustezza, **D** i diagrammi (disegno locale e
-correzione dello schiacciamento nel PDF), **E** i diagrammi mancanti.
+correzione dello schiacciamento nel PDF), **E** i diagrammi mancanti, **F** i limiti dichiarati nella guida,
+**G** velocità e provenienza dei diagrammi.
 
 ---
 
@@ -86,7 +87,7 @@ non possono divergere.
 | C12 | **Controllo dell'endpoint Azure** prima di partire, e **il deployment scritto a mano resta sempre primo in catena**. | Su Azure il nome chiamabile è il deployment, che solo chi ha creato la risorsa conosce: non è derivabile e non va scavalcato dalla scoperta. |
 | C13 | **Metriche in interfaccia**: aggiunte «Business rules» e il modello che ha risposto, i lotti eseguiti, la versione del contratto. | Serve sapere chi ha scritto il documento che si sta per firmare. |
 | C14 | **Sorgente del diagramma sempre consultabile** in un pannello, anche quando il disegno riesce. | Quando un diagramma non si disegna, il sorgente è l'unico modo per capire perché. |
-| C15 | **Collaudo automatico `test_catena.py`** — 45 casi, nessuna rete, nessuna chiave, nessun costo: scoperta, scalata, memoria, messaggi, tetti, riparazione JSON, enum, Mermaid, lotti. | Porting del collaudo di Nuvia. È il modo per cambiare una regola e sapere subito cosa si rompe. |
+| C15 | **Collaudo automatico `test_catena.py`** — 64 casi, nessuna rete, nessuna chiave, nessun costo: scoperta, scalata, memoria, messaggi, tetti, riparazione JSON, enum, Mermaid, lotti. | Porting del collaudo di Nuvia. È il modo per cambiare una regola e sapere subito cosa si rompe. |
 | C16 | **`requirements.txt`**: tolti `openai`, `anthropic`, `google-genai`; `requests` è ora una dipendenza dichiarata dell'app, non solo dell'esportatore. | Vedi A16. Tre dipendenze pesanti in meno da aggiornare e da far passare in azienda. |
 | C17 | **README vero** (prima conteneva la parola «Ciao») e questo elenco. | — |
 
@@ -116,6 +117,56 @@ vedi E1.
 | E9 | **Un diagramma che non si costruisce non fa cadere l'analisi** (eccezione catturata per diagramma). | — |
 | E10 | **Avvisi di contratto tradotti in inglese**, come il resto dell'interfaccia, e più precisi: distinguono «non consegnato» da «troppo scarno» da «né il modello né le tabelle bastano». | Erano in italiano dentro un'interfaccia inglese — è la riga che ha visto il collega. |
 | E11 | **Undici casi in più nel collaudo**, incluso quello che riproduce la segnalazione: modello che consegna un diagramma su quattro. | — |
+
+---
+
+## F · I limiti dichiarati nella guida, chiusi
+
+Tre dei limiti elencati in fondo a `GUIDA.md` erano risolvibili. Lo sono.
+
+| # | Modifica | Perché |
+|---|---|---|
+| F1 | **Passata di consolidamento fra lotti.** Quando i lotti sono più di uno, una chiamata finale che riceve **solo l'inventario** (nessun codice sorgente) produce una sintesi unica dell'intera applicazione e cerca i collegamenti che nessun lotto poteva vedere. Costa poche migliaia di token contro le centinaia di migliaia dell'analisi. | I lotti non si vedevano fra loro: ognuno scriveva la propria sintesi come se fosse tutta l'applicazione, e una dipendenza fra un file del lotto 1 e uno del lotto 3 non la guardava nessuno. |
+| F2 | **Ogni nome tornato dal consolidamento viene verificato** contro l'inventario: se anche un solo capo del collegamento non esiste, la riga si butta e si scrive che si è buttata. | In quella chiamata il modello non ha il codice davanti: un nome inventato non lo smentirebbe nessuno. È il punto del progetto in cui l'invenzione sarebbe più facile e meno verificabile. |
+| F3 | **Il consolidamento che fallisce non fa perdere l'analisi**: si tengono le sintesi per lotto e lo si dichiara negli avvisi. | Una visione d'insieme mancante è un peccato; tre minuti di analisi persi per una chiamata accessoria sarebbero un difetto. |
+| F4 | **I diagrammi si rifanno dopo il consolidamento.** | I collegamenti fra lotti sono archi nuovi del call graph — cioè esattamente quello che prima non si vedeva. |
+| F5 | **Le PROBABLE_CALL vengono risolte contro l'indice dei componenti di TUTTA la codebase**, non solo del file corrente. Tre esiti: dichiarata da qualche parte → diventa `CALL` a confidenza `HIGH`; nome di libreria o troppo corto → si butta; nient'altro → resta `PROBABLE_CALL` ma a confidenza `LOW`, con scritto che punta fuori dal perimetro. | Prima una chiamata fra due file era indistinguibile dal rumore: entrambe `PROBABLE_CALL` a `MEDIUM`. Ora la dipendenza vera fra `fatt.pkb` e `sconti.pkb` è certa e il rumore è sparito. |
+| F6 | **Lista di ~120 nomi di libreria** (Java, Python, JavaScript, generici) esclusi alla fonte. Non contiene i package Oracle tipo `UTL_FILE` o `DBMS_SQL`: quelle sono dipendenze reali. | `string`, `logger`, `append`, `println` non sono componenti dell'applicazione. |
+| F7 | **`new Cliente(...)` non è più una chiamata a procedura.** | Il pattern generico non distingue una costruzione di oggetto da una chiamata; i cinque caratteri prima sì. |
+| F8 | **CORRETTO: il pattern `JAVA_METHOD` fabbricava componenti fantasma.** Aveva `\s` fra le alternative dei modificatori, quindi bastava uno spazio per farlo scattare: in un PL/SQL, `BEGIN CALC_SCONTO(x)` registrava `CALC_SCONTO` come metodo Java. Ora servono `public`/`private`/`protected`. | Componenti inesistenti nelle tabelle e nel PDF — e, peggio, dentro l'indice usato per risolvere le chiamate, dove facevano **sparire** le dipendenze vere: la procedura era «già dichiarata qui», quindi la chiamata non veniva registrata. Difetto ereditato dalla versione originale. |
+| F9 | **Il conteggio della risoluzione finisce nei metadati e in interfaccia**: quante risolte, quante fuori perimetro, quante buttate. | Chi legge la mappa delle dipendenze deve sapere quanta parte è certa e quanta è un sospetto. |
+| F10 | **La «Coverage %» è sparita.** Al suo posto: *Files described* (quota dei file citati da almeno una riga) e un pannello con righe totali, quota con evidenza, quota ad alta confidenza, chiamate non risolte, sezioni riempite, **e l'elenco dei file che nessuna riga menziona**. | La vecchia percentuale contava quante delle sei sezioni non erano vuote: un'applicazione descritta con una riga per sezione dava 100%. Un numero così, grande in cima alla pagina, non è ottimista — è fuorviante, e qualcuno lo mette in una slide. Nessuna misura automatica può dire quanta parte di un'applicazione è stata catturata; si può però misurare quanto è solido quello che c'è. |
+| F11 | **Tredici casi in più nel collaudo**, compresi il collegamento inventato che dev'essere buttato e il componente fantasma che non deve più nascere. | — |
+
+### Cosa resta aperto, e perché
+
+- **Il process flow del modello resta migliore del nostro** quando lui lo
+  produce: sa mettere i passi in ordine di esecuzione, cosa che dalle tabelle
+  non si ricava. Non è un difetto da chiudere — è il modello che aggiunge
+  valore dove sa aggiungerlo, e infatti il suo disegno viene tenuto.
+- **Le chiamate fuori perimetro restano un sospetto.** Distinguere una chiamata
+  vera da un cast o da un costruttore in ogni linguaggio richiede un parser per
+  linguaggio, non un'espressione regolare. Ora però sono marcate `LOW` e
+  contate, quindi si sa quanto pesano.
+
+---
+
+## G · Velocità di risposta e falso allarme sui diagrammi
+
+Due segnalazioni dal campo: «ci mette minuti anziché secondi» e un avviso su
+`mermaid_call_graph` letto come un errore.
+
+| # | Modifica | Perché |
+|---|---|---|
+| G1 | **Selettore «Reasoning effort» nella barra laterale**: Fast · Balanced · Thorough · Deep. Tradotto per provider: `thinkingLevel` su Gemini, `thinking` con budget su Anthropic, `reasoning_effort` su Azure/OpenAI. | È la leva che sposta di più il tempo di risposta, molto più della scelta fra un modello e l'altro: lo stesso flash col ragionamento alto impiega minuti dove col basso impiega secondi. Prima non c'era: si prendeva il valore di serie del provider, che sui modelli nuovi è alto. |
+| G2 | **Il livello è un punto di partenza, non un ordine.** Alcuni modelli rifiutano i livelli bassi con un 400 (il 3.8 non scende sotto medium). L'app legge il corpo dell'errore, **sale di un gradino**, ricorda il minimo per QUEL modello e riprova. La volta dopo parte già giusta. | Chi sceglie «Fast» ottiene il più veloce che quel modello sa fare, non un errore. È lo stesso meccanismo del `thinkingLevel` di Nuvia, esteso ai tre provider. |
+| G3 | **Un adattamento non consuma i tentativi.** La scala ha tre gradini: con due soli tentativi non ci si arriva in cima. Ora gli adattamenti hanno un contatore separato (3 nella prova, 4 nella chiamata vera). | Il tentativo dopo un adattamento è una richiesta *diversa*, non la ripetizione di una fallita: consumare la seconda chance che serve ai guasti veri era sbagliato. |
+| G4 | **La prova di contatto usa sempre il livello più basso.** | È una domanda da due parole: farla pensare vanificherebbe il tetto dei cinque secondi che la prova esiste per rispettare. |
+| G5 | **Su Anthropic il ragionamento esteso disattiva il prefill `{`** e alza `max_tokens` sopra il budget di pensiero. | Le due cose non convivono, e il budget si scala da `max_tokens`: senza alzarlo il modello pensa e non gli resta spazio per scrivere. |
+| G6 | **Su Azure `reasoning_effort` si manda solo ai modelli che ragionano** (`o…`, `gpt-5`, nomi con «reason»), con l'adattamento come rete. | Mandarlo a un `gpt-4o` costa un 400 e un giro a vuoto ogni volta. |
+| G7 | **Tempo visibile**: secondi trascorsi nella barra di avanzamento, durata totale e livello di ragionamento usato nella scheda Overview. | Un'analisi vera dura minuti. Una barra ferma senza numeri sembra bloccata — ed è così che nasce «ci mette troppo». |
+| G8 | **«Diagramma costruito dai dati» non è più un avviso di contratto.** La provenienza si dice accanto al disegno, nella scheda Diagrams; nel pannello degli avvisi resta solo il caso vero: nessun diagramma disponibile da nessuna delle due parti. | Nel pannello «what the app had to fix» sembrava un errore, e infatti è stato segnalato come tale. Costruire il diagramma dai dati è il funzionamento previsto, non un guasto. |
+| G9 | **Sei casi in più nel collaudo**: la scala che sale, il minimo ricordato, la prova che resta al livello più basso, la provenienza registrata fuori dagli avvisi. | — |
 
 ---
 
@@ -194,6 +245,56 @@ vedi E1.
 | E9 | **Un diagramma che non si costruisce non fa cadere l'analisi** (eccezione catturata per diagramma). | — |
 | E10 | **Avvisi di contratto tradotti in inglese**, come il resto dell'interfaccia, e più precisi: distinguono «non consegnato» da «troppo scarno» da «né il modello né le tabelle bastano». | Erano in italiano dentro un'interfaccia inglese — è la riga che ha visto il collega. |
 | E11 | **Undici casi in più nel collaudo**, incluso quello che riproduce la segnalazione: modello che consegna un diagramma su quattro. | — |
+
+---
+
+## F · I limiti dichiarati nella guida, chiusi
+
+Tre dei limiti elencati in fondo a `GUIDA.md` erano risolvibili. Lo sono.
+
+| # | Modifica | Perché |
+|---|---|---|
+| F1 | **Passata di consolidamento fra lotti.** Quando i lotti sono più di uno, una chiamata finale che riceve **solo l'inventario** (nessun codice sorgente) produce una sintesi unica dell'intera applicazione e cerca i collegamenti che nessun lotto poteva vedere. Costa poche migliaia di token contro le centinaia di migliaia dell'analisi. | I lotti non si vedevano fra loro: ognuno scriveva la propria sintesi come se fosse tutta l'applicazione, e una dipendenza fra un file del lotto 1 e uno del lotto 3 non la guardava nessuno. |
+| F2 | **Ogni nome tornato dal consolidamento viene verificato** contro l'inventario: se anche un solo capo del collegamento non esiste, la riga si butta e si scrive che si è buttata. | In quella chiamata il modello non ha il codice davanti: un nome inventato non lo smentirebbe nessuno. È il punto del progetto in cui l'invenzione sarebbe più facile e meno verificabile. |
+| F3 | **Il consolidamento che fallisce non fa perdere l'analisi**: si tengono le sintesi per lotto e lo si dichiara negli avvisi. | Una visione d'insieme mancante è un peccato; tre minuti di analisi persi per una chiamata accessoria sarebbero un difetto. |
+| F4 | **I diagrammi si rifanno dopo il consolidamento.** | I collegamenti fra lotti sono archi nuovi del call graph — cioè esattamente quello che prima non si vedeva. |
+| F5 | **Le PROBABLE_CALL vengono risolte contro l'indice dei componenti di TUTTA la codebase**, non solo del file corrente. Tre esiti: dichiarata da qualche parte → diventa `CALL` a confidenza `HIGH`; nome di libreria o troppo corto → si butta; nient'altro → resta `PROBABLE_CALL` ma a confidenza `LOW`, con scritto che punta fuori dal perimetro. | Prima una chiamata fra due file era indistinguibile dal rumore: entrambe `PROBABLE_CALL` a `MEDIUM`. Ora la dipendenza vera fra `fatt.pkb` e `sconti.pkb` è certa e il rumore è sparito. |
+| F6 | **Lista di ~120 nomi di libreria** (Java, Python, JavaScript, generici) esclusi alla fonte. Non contiene i package Oracle tipo `UTL_FILE` o `DBMS_SQL`: quelle sono dipendenze reali. | `string`, `logger`, `append`, `println` non sono componenti dell'applicazione. |
+| F7 | **`new Cliente(...)` non è più una chiamata a procedura.** | Il pattern generico non distingue una costruzione di oggetto da una chiamata; i cinque caratteri prima sì. |
+| F8 | **CORRETTO: il pattern `JAVA_METHOD` fabbricava componenti fantasma.** Aveva `\s` fra le alternative dei modificatori, quindi bastava uno spazio per farlo scattare: in un PL/SQL, `BEGIN CALC_SCONTO(x)` registrava `CALC_SCONTO` come metodo Java. Ora servono `public`/`private`/`protected`. | Componenti inesistenti nelle tabelle e nel PDF — e, peggio, dentro l'indice usato per risolvere le chiamate, dove facevano **sparire** le dipendenze vere: la procedura era «già dichiarata qui», quindi la chiamata non veniva registrata. Difetto ereditato dalla versione originale. |
+| F9 | **Il conteggio della risoluzione finisce nei metadati e in interfaccia**: quante risolte, quante fuori perimetro, quante buttate. | Chi legge la mappa delle dipendenze deve sapere quanta parte è certa e quanta è un sospetto. |
+| F10 | **La «Coverage %» è sparita.** Al suo posto: *Files described* (quota dei file citati da almeno una riga) e un pannello con righe totali, quota con evidenza, quota ad alta confidenza, chiamate non risolte, sezioni riempite, **e l'elenco dei file che nessuna riga menziona**. | La vecchia percentuale contava quante delle sei sezioni non erano vuote: un'applicazione descritta con una riga per sezione dava 100%. Un numero così, grande in cima alla pagina, non è ottimista — è fuorviante, e qualcuno lo mette in una slide. Nessuna misura automatica può dire quanta parte di un'applicazione è stata catturata; si può però misurare quanto è solido quello che c'è. |
+| F11 | **Tredici casi in più nel collaudo**, compresi il collegamento inventato che dev'essere buttato e il componente fantasma che non deve più nascere. | — |
+
+### Cosa resta aperto, e perché
+
+- **Il process flow del modello resta migliore del nostro** quando lui lo
+  produce: sa mettere i passi in ordine di esecuzione, cosa che dalle tabelle
+  non si ricava. Non è un difetto da chiudere — è il modello che aggiunge
+  valore dove sa aggiungerlo, e infatti il suo disegno viene tenuto.
+- **Le chiamate fuori perimetro restano un sospetto.** Distinguere una chiamata
+  vera da un cast o da un costruttore in ogni linguaggio richiede un parser per
+  linguaggio, non un'espressione regolare. Ora però sono marcate `LOW` e
+  contate, quindi si sa quanto pesano.
+
+---
+
+## G · Velocità di risposta e falso allarme sui diagrammi
+
+Due segnalazioni dal campo: «ci mette minuti anziché secondi» e un avviso su
+`mermaid_call_graph` letto come un errore.
+
+| # | Modifica | Perché |
+|---|---|---|
+| G1 | **Selettore «Reasoning effort» nella barra laterale**: Fast · Balanced · Thorough · Deep. Tradotto per provider: `thinkingLevel` su Gemini, `thinking` con budget su Anthropic, `reasoning_effort` su Azure/OpenAI. | È la leva che sposta di più il tempo di risposta, molto più della scelta fra un modello e l'altro: lo stesso flash col ragionamento alto impiega minuti dove col basso impiega secondi. Prima non c'era: si prendeva il valore di serie del provider, che sui modelli nuovi è alto. |
+| G2 | **Il livello è un punto di partenza, non un ordine.** Alcuni modelli rifiutano i livelli bassi con un 400 (il 3.8 non scende sotto medium). L'app legge il corpo dell'errore, **sale di un gradino**, ricorda il minimo per QUEL modello e riprova. La volta dopo parte già giusta. | Chi sceglie «Fast» ottiene il più veloce che quel modello sa fare, non un errore. È lo stesso meccanismo del `thinkingLevel` di Nuvia, esteso ai tre provider. |
+| G3 | **Un adattamento non consuma i tentativi.** La scala ha tre gradini: con due soli tentativi non ci si arriva in cima. Ora gli adattamenti hanno un contatore separato (3 nella prova, 4 nella chiamata vera). | Il tentativo dopo un adattamento è una richiesta *diversa*, non la ripetizione di una fallita: consumare la seconda chance che serve ai guasti veri era sbagliato. |
+| G4 | **La prova di contatto usa sempre il livello più basso.** | È una domanda da due parole: farla pensare vanificherebbe il tetto dei cinque secondi che la prova esiste per rispettare. |
+| G5 | **Su Anthropic il ragionamento esteso disattiva il prefill `{`** e alza `max_tokens` sopra il budget di pensiero. | Le due cose non convivono, e il budget si scala da `max_tokens`: senza alzarlo il modello pensa e non gli resta spazio per scrivere. |
+| G6 | **Su Azure `reasoning_effort` si manda solo ai modelli che ragionano** (`o…`, `gpt-5`, nomi con «reason»), con l'adattamento come rete. | Mandarlo a un `gpt-4o` costa un 400 e un giro a vuoto ogni volta. |
+| G7 | **Tempo visibile**: secondi trascorsi nella barra di avanzamento, durata totale e livello di ragionamento usato nella scheda Overview. | Un'analisi vera dura minuti. Una barra ferma senza numeri sembra bloccata — ed è così che nasce «ci mette troppo». |
+| G8 | **«Diagramma costruito dai dati» non è più un avviso di contratto.** La provenienza si dice accanto al disegno, nella scheda Diagrams; nel pannello degli avvisi resta solo il caso vero: nessun diagramma disponibile da nessuna delle due parti. | Nel pannello «what the app had to fix» sembrava un errore, e infatti è stato segnalato come tale. Costruire il diagramma dai dati è il funzionamento previsto, non un guasto. |
+| G9 | **Sei casi in più nel collaudo**: la scala che sale, il minimo ricordato, la prova che resta al livello più basso, la provenienza registrata fuori dagli avvisi. | — |
 
 ---
 

@@ -79,8 +79,15 @@ La scheda *Downloads* dice sempre quale dei due sta per succedere.
 ## Collaudo
 
 ```bash
-python test_catena.py     # 45 casi, nessuna rete, nessuna chiave, nessun costo
+python test_catena.py     # 64 casi, nessuna rete, nessuna chiave, nessun costo
 ```
+
+## Documentazione
+
+- [GUIDA.md](GUIDA.md) — cosa fa e come funziona: una parte divulgativa e una
+  tecnica, file per file. C'è anche in PDF (`GUIDA.pdf`); per rigenerarlo dopo
+  una modifica: `pip install markdown` e `wkhtmltopdf` installato, poi
+  `python guida_pdf.py`.
 
 ## Modifiche
 

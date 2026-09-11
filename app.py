@@ -236,7 +236,12 @@ def extract_functions_and_procedures(code, filename):
         ("PROCEDURE", r"\bPROCEDURE\s+([A-Z_][A-Z0-9_$#.]*)"),
         ("FUNCTION", r"\bFUNCTION\s+([A-Z_][A-Z0-9_$#.]*)"),
         ("PACKAGE", r"\bPACKAGE(?:\s+BODY)?\s+([A-Z_][A-Z0-9_$#.]*)"),
-        ("JAVA_METHOD", r"\b(?:public|private|protected|static|final|synchronized|\s)+[\w<>\[\], ?]+\s+([A-Za-z_]\w*)\s*\("),
+        # Il pattern originale aveva `\s` fra le alternative dei modificatori:
+        # bastava uno spazio per farlo scattare, quindi in un PL/SQL o in un
+        # COBOL «BEGIN CALC_SCONTO(x)» registrava CALC_SCONTO come metodo Java.
+        # Componenti fantasma nelle tabelle, e — peggio — nell'indice usato per
+        # risolvere le chiamate, dove facevano sparire le dipendenze vere.
+        ("JAVA_METHOD", r"\b(?:public|private|protected)\s+(?:(?:static|final|synchronized|abstract|native)\s+)*[\w<>\[\],?]+(?:\s*\[\s*\])?\s+([A-Za-z_]\w*)\s*\("),
         ("PYTHON_FUNCTION", r"(?m)^\s*def\s+([A-Za-z_]\w*)\s*\("),
         ("JAVASCRIPT_FUNCTION", r"\bfunction\s+([A-Za-z_$][\w$]*)\s*\("),
         ("COBOL_PARAGRAPH", r"(?m)^\s*([A-Z0-9][A-Z0-9-]+)\.\s*$")
@@ -301,10 +306,18 @@ def extract_probable_calls(code, filename, components):
     dependencies = []
     for pattern, confidence in patterns:
         trovati = 0
-        for match in re.findall(pattern, code, flags=re.IGNORECASE):
+        for riscontro in re.finditer(pattern, code, flags=re.IGNORECASE):
+            match = riscontro.group(1)
+            # `new Cliente(...)` non è una chiamata a una procedura: è la
+            # costruzione di un oggetto. Il pattern generico non lo distingue,
+            # ma i quattro caratteri prima sì.
+            prima = code[max(0, riscontro.start() - 5):riscontro.start()]
+            if re.search(r"\bnew\s*$", prima, flags=re.IGNORECASE):
+                continue
             norm_match = normalize_identifier(match)
             basso = norm_match.lower()
-            if not basso or basso in excluded or basso in declarations or len(basso) < 3:
+            if (not basso or basso in excluded or basso in declarations
+                    or basso in LIBRERIE_NOTE or len(basso) < 3):
                 continue
             dependencies.append({
                 "source": filename, "target": norm_match, "dependency_type": "PROBABLE_CALL",
@@ -393,6 +406,88 @@ def extract_data_operations_with_regex(code, filename):
                 })
     return unique_dicts(data_objects, ["object_name", "operation", "source_file"])
 
+# Nomi che compaiono ovunque e non sono componenti dell'applicazione: sono
+# libreria, framework o parole del linguaggio. Tenerli produce righe di
+# dipendenza verso «string», «logger» e «append», che non dicono nulla e
+# affogano le dipendenze vere. NON contiene i package Oracle come UTL_FILE o
+# DBMS_SQL: quelli sono dipendenze reali e vanno documentate.
+LIBRERIE_NOTE = {
+    # Java / C#
+    "system", "string", "stringbuilder", "integer", "long", "double", "boolean",
+    "arraylist", "hashmap", "hashset", "linkedlist", "optional", "stream", "collectors",
+    "objects", "arrays", "collections", "files", "paths", "localdate", "localdatetime",
+    "bigdecimal", "biginteger", "exception", "runtimeexception", "logger", "logfactory",
+    "assert", "equals", "hashcode", "tostring", "valueof", "parseint", "parselong",
+    "getinstance", "getclass", "getname", "getvalue", "setvalue", "builder", "of",
+    # Python
+    "append", "extend", "items", "keys", "values", "join", "format", "split", "strip",
+    "replace", "isinstance", "enumerate", "zip", "sorted", "reversed", "abs", "any", "all",
+    "getattr", "setattr", "hasattr", "super", "self", "staticmethod", "classmethod",
+    "property", "datetime", "timedelta", "logging", "json", "loads", "dumps", "sleep",
+    # JavaScript / TypeScript
+    "settimeout", "setinterval", "promise", "resolve", "reject", "fetch", "foreach",
+    "filter", "reduce", "push", "pop", "shift", "slice", "splice", "indexof", "includes",
+    "parsefloat", "stringify", "parse", "addeventlistener", "queryselector", "document",
+    "window", "error", "warn", "info", "debug", "trace",
+    # generici
+    "main", "init", "run", "start", "stop", "close", "open", "read", "write", "load",
+    "save", "check", "validate", "process", "handle", "execute", "sizeof", "printf",
+}
+
+
+def resolve_dependencies(metadata):
+    """Le PROBABLE_CALL, risolte contro TUTTI i componenti della codebase.
+
+    Il pattern «identificatore seguito da parentesi» cattura ogni chiamata del
+    linguaggio: da solo produce più rumore che segnale. Prima si escludeva solo
+    quello che era dichiarato NELLO STESSO FILE, e la lista di esclusione era di
+    venti parole. Ora, avendo l'indice dei componenti di tutta la codebase, ogni
+    bersaglio può finire in una di tre categorie:
+
+      · dichiarato da qualche parte nel codice caricato  → è una CALL vera, HIGH;
+      · nome di libreria o troppo corto                  → si butta;
+      · nient'altro                                      → resta PROBABLE_CALL,
+        ma a confidenza LOW e col motivo scritto: punta fuori dal perimetro.
+
+    Il conteggio delle tre categorie finisce nei metadati, così chi legge sa
+    quanto della mappa delle dipendenze è certo e quanto è un sospetto."""
+    dichiarati = {str(c.get("component_name", "")).strip().lower()
+                  for c in metadata.get("components", [])}
+    dichiarati.discard("")
+    fuori, risolte, incerte, scartate = [], 0, 0, 0
+    for d in metadata.get("dependencies", []):
+        if d.get("dependency_type") != "PROBABLE_CALL":
+            fuori.append(d)
+            continue
+        bersaglio = str(d.get("target", "")).strip().lower()
+        # `pkg.procedura` risolve anche se in codebase è dichiarata `procedura`
+        corto = bersaglio.rsplit(".", 1)[-1]
+        primo = bersaglio.split(".", 1)[0]
+        if bersaglio in dichiarati or corto in dichiarati:
+            d["dependency_type"] = "CALL"
+            d["confidence"] = "HIGH"
+            d["evidence"] = "Call pattern resolved against a component declared in the codebase"
+            risolte += 1
+        elif (bersaglio in LIBRERIE_NOTE or corto in LIBRERIE_NOTE
+              # `System.out.println`: quello che conta è il primo pezzo, non
+              # l'ultimo — è lì che sta il nome della libreria.
+              or (primo in LIBRERIE_NOTE and primo != bersaglio) or len(corto) < 4):
+            scartate += 1
+            continue
+        else:
+            d["confidence"] = "LOW"
+            d["evidence"] = "Unresolved call pattern: target is not declared in the submitted code"
+            incerte += 1
+        fuori.append(d)
+    metadata["dependencies"] = fuori
+    metadata["dependency_resolution"] = {
+        "resolved_to_declared_component": risolte,
+        "unresolved_outside_perimeter": incerte,
+        "discarded_as_library_noise": scartate,
+    }
+    return metadata
+
+
 def analyze_single_source_locally(source):
     filename, code = source["filename"], source["content"]
     components = extract_functions_and_procedures(code, filename)
@@ -427,7 +522,7 @@ def extract_technical_metadata(sources):
         all_objs.extend(m["data_objects"])
         all_risks.extend(m["local_risks"])
         all_tabs.extend(m["sql_tables"])
-    return {
+    metadati = {
         "file_count": len(sources),
         "total_line_count": sum(m["line_count"] for m in file_metadata),
         "total_character_count": sum(m["character_count"] for m in file_metadata),
@@ -439,6 +534,7 @@ def extract_technical_metadata(sources):
         "data_objects": unique_dicts(all_objs, ["object_name", "operation", "source_file"]),
         "local_risks": all_risks, "files": file_metadata
     }
+    return resolve_dependencies(metadati)
 
 def metadata_for_prompt(metadata, sources):
     """I metadati che vanno NEL prompt: solo i file di questo lotto, e senza il
@@ -460,13 +556,15 @@ def metadata_for_prompt(metadata, sources):
 # =============================================================================
 # 7. AI ORCHESTRATION — catena modelli + contratto JSON
 # =============================================================================
-def build_chain(provider, api_key, azure_endpoint, model_name, preferenza, diario):
+def build_chain(provider, api_key, azure_endpoint, model_name, preferenza, diario,
+                ragionamento="low"):
     return CatenaModelli(
         provider=provider,
         chiave=api_key,
         endpoint=azure_endpoint or "",
         deployment=model_name or "",
         preferenza=preferenza,
+        ragionamento=ragionamento,
         lingua="en",
         log=diario.append,
     )
@@ -523,9 +621,12 @@ def analysis_signature(sources, provider, model_name, preferenza):
     return hashlib.sha256("|".join(parti).encode()).hexdigest()[:16]
 
 def analyze_legacy_application(sources, metadata, provider, api_key, model_name,
-                               azure_endpoint=None, preferenza="qualita", progress=None):
+                               azure_endpoint=None, preferenza="qualita", progress=None,
+                               ragionamento="low"):
     diario = []
-    catena = build_chain(provider, api_key, azure_endpoint, model_name, preferenza, diario)
+    partenza = time.time()
+    catena = build_chain(provider, api_key, azure_endpoint, model_name, preferenza, diario,
+                         ragionamento)
     lotti = split_into_batches(sources)
     if len(lotti) > MAX_LOTTI:
         raise ValueError(
@@ -541,7 +642,47 @@ def analyze_legacy_application(sources, metadata, provider, api_key, model_name,
     unito["_modello"] = risultati[-1].get("_modello", "")
     unito["_diario"] = diario
     unito["_lotti"] = len(lotti)
-    return merge_static_and_ai_results(unito, metadata)
+    completo = merge_static_and_ai_results(unito, metadata)
+    completo["_ragionamento"] = ragionamento
+    completo["_durata_s"] = round(time.time() - partenza)
+    if len(lotti) > 1:
+        if progress:
+            progress(len(lotti) + 1, len(lotti) + 1, ["consolidating the batches"])
+        completo = consolida(catena, provider, completo, lotti)
+        # I diagrammi si rifanno: i collegamenti fra lotti sono archi nuovi del
+        # call graph, ed è esattamente quello che nessun lotto poteva vedere.
+        completo = diagrams.arricchisci(completo)
+        completo["_durata_s"] = round(time.time() - partenza)
+    return completo
+
+
+def consolida(catena, provider, risultato, lotti):
+    """La passata finale sui soli risultati strutturati.
+
+    I lotti non si vedono fra loro: ognuno scrive la propria sintesi come se
+    fosse tutta l'applicazione, e una dipendenza fra un file del lotto 1 e uno
+    del lotto 3 non la guarda nessuno. Questa chiamata NON contiene codice —
+    solo l'inventario — quindi costa poche migliaia di token contro le
+    centinaia di migliaia dell'analisi, e chiude il buco che pesa di più.
+
+    Se fallisce non è grave: si tengono le sintesi per lotto e si scrive che è
+    andata così. Una visione d'insieme mancante è un peccato; un'analisi persa
+    per una chiamata accessoria sarebbe un difetto."""
+    nomi_per_lotto = [[s["filename"] for s in lotto] for lotto in lotti]
+    prompt = contract.prompt_consolidamento(risultato, nomi_per_lotto)
+    try:
+        risposta = catena.chiedi(
+            prompt, sistema=contract.SISTEMA, json_mode=True,
+            schema=contract.schema_consolidamento() if provider == "Google Gemini" else None,
+            max_token=8000)
+        grezzo = contract.estrai_json(risposta.testo)
+    except Exception as e:
+        avvisi = list(risultato.get("contract_warnings") or [])
+        avvisi.append(f"consolidation pass failed ({getattr(e, 'causa', None) or type(e).__name__}): "
+                      "per-batch summaries kept")
+        risultato["contract_warnings"] = avvisi
+        return risultato
+    return contract.applica_consolidamento(risultato, grezzo)
 
 # =============================================================================
 # 8. RENDERING FUNCTIONS (SME REVIEW WORKFLOW)
@@ -608,16 +749,61 @@ def render_mermaid_diagram(title, diagram, filename, height="500px"):
     st.download_button(label=f"Download {filename}", data=diagram, file_name=filename,
                        mime="text/plain", use_container_width=True)
 
-def calculate_coverage(result):
-    reqs = {
+def quality_indicators(result, metadata):
+    """Indicatori su QUANTO È ANCORATO il risultato, non su quanto è completo.
+
+    Prima l'unico numero mostrato era una «Coverage %» che contava quante delle
+    sei sezioni non erano vuote. Un'applicazione descritta con una riga per
+    sezione dava 100%. Un numero del genere, messo grande in cima alla pagina,
+    non è ottimista: è fuorviante, e qualcuno lo mette in una slide.
+
+    Nessuna misura automatica può dire quanta parte di un'applicazione è stata
+    catturata — servirebbe sapere in anticipo la risposta. Si può però misurare
+    quanto è solido quello che c'è, ed è quello che si mostra:
+
+      · quanti file sono stati effettivamente citati da almeno una riga;
+      · quante righe portano un'evidenza dal codice;
+      · quante righe sono ad alta confidenza;
+      · quante dipendenze restano non risolte.
+    """
+    sezioni = {
         "Business logic": bool(result.get("business_rules") or result.get("business_processes")),
         "Dependencies": bool(result.get("dependencies")),
         "Interfaces": bool(result.get("interfaces")),
         "Data flows": bool(result.get("data_flows")),
         "Technical risks": bool(result.get("technical_risks")),
-        "Application mapping": bool(result.get("application_mapping"))
+        "Application mapping": bool(result.get("application_mapping")),
     }
-    return reqs, round(sum(reqs.values()) / len(reqs) * 100)
+    file_totali = {f.get("filename") for f in metadata.get("files", [])} - {None, ""}
+    citati = set()
+    righe, con_evidenza, alta_confidenza, non_risolte = 0, 0, 0, 0
+    for nome in contract.CAMPI:
+        for r in result.get(nome, []) or []:
+            righe += 1
+            if str(r.get("evidence", "")).strip():
+                con_evidenza += 1
+            if str(r.get("confidence", "")).strip().upper() == "HIGH":
+                alta_confidenza += 1
+            if r.get("dependency_type") == "PROBABLE_CALL":
+                non_risolte += 1
+            for campo in ("source_file", "affected_component", "source"):
+                v = str(r.get(campo, "")).strip()
+                if v in file_totali:
+                    citati.add(v)
+    def pct(parte, tutto):
+        return round(parte / tutto * 100) if tutto else 0
+    return {
+        "sezioni": sezioni,
+        "sezioni_pct": pct(sum(sezioni.values()), len(sezioni)),
+        "file_totali": len(file_totali),
+        "file_citati": len(citati),
+        "file_pct": pct(len(citati), len(file_totali)),
+        "file_mai_citati": sorted(file_totali - citati),
+        "righe": righe,
+        "evidenza_pct": pct(con_evidenza, righe),
+        "confidenza_alta_pct": pct(alta_confidenza, righe),
+        "dipendenze_non_risolte": non_risolte,
+    }
 
 @st.cache_data(show_spinner=False)
 def build_pdf(payload, metadata_payload, provider, model_name):
@@ -663,6 +849,14 @@ preferenza = "qualita" if st.sidebar.radio(
          "back downwards. Speed first is the Nuvia rule: fast models only."
 ) == "Quality first" else "velocita"
 
+RAGIONAMENTO = {"Fast": "minimal", "Balanced": "low", "Thorough": "medium", "Deep": "high"}
+ragionamento = RAGIONAMENTO[st.sidebar.select_slider(
+    "Reasoning effort", options=list(RAGIONAMENTO), value="Balanced",
+    help="How much the model may think before answering. This is the biggest lever on how "
+         "long a run takes — far more than the choice of model. If a model refuses the level "
+         "you pick (some will not go below medium), the app moves up one step for that model, "
+         "remembers it, and carries on: you always get the fastest that model can do.")]
+
 with st.sidebar.expander("🔌 Model chain", expanded=False):
     st.caption(
         "The app asks the provider which models this key can actually use, keeps the "
@@ -672,7 +866,8 @@ with st.sidebar.expander("🔌 Model chain", expanded=False):
     )
     if st.button("Test connection", use_container_width=True, disabled=not api_key):
         diario = []
-        catena = build_chain(provider, api_key, azure_endpoint, model_name, preferenza, diario)
+        catena = build_chain(provider, api_key, azure_endpoint, model_name, preferenza, diario,
+                             ragionamento)
         t0 = time.time()
         try:
             r = catena.chiedi("ping", solo_prova=True, forza_elenco=True)
@@ -733,12 +928,19 @@ if run_analysis:
             try:
                 metadata = extract_technical_metadata(sources)
 
+                inizio = time.time()
+
                 def avanza(i, n, nomi):
-                    barra.progress((i - 1) / n, text=f"Batch {i}/{n}: {', '.join(nomi)[:80]}")
+                    # Il tempo che passa si mostra: un'analisi vera dura minuti,
+                    # e una barra ferma senza numeri sembra bloccata.
+                    barra.progress((i - 1) / n,
+                                   text=f"Batch {i}/{n} · {int(time.time()-inizio)}s · "
+                                        f"{', '.join(nomi)[:70]}")
 
                 result = analyze_legacy_application(
                     sources, metadata, provider, api_key, model_name,
-                    azure_endpoint, preferenza, progress=avanza)
+                    azure_endpoint, preferenza, progress=avanza,
+                    ragionamento=ragionamento)
                 barra.progress(1.0, text="Done.")
                 st.session_state["analysis_result"] = result
                 st.session_state["analysis_metadata"] = metadata
@@ -748,7 +950,8 @@ if run_analysis:
                 st.session_state["analysis_signature"] = firma
             except NessunModello as e:
                 barra.empty()
-                catena = build_chain(provider, api_key, azure_endpoint, model_name, preferenza, [])
+                catena = build_chain(provider, api_key, azure_endpoint, model_name, preferenza, [],
+                                     ragionamento)
                 st.error(catena.messaggio_nessuno(e))
                 with st.expander("What the app tried"):
                     st.code("\n".join(e.diario) or f"cause: {e.causa}", language="text")
@@ -764,13 +967,37 @@ result = st.session_state["analysis_result"]
 metadata = st.session_state["analysis_metadata"]
 saved_sources = st.session_state["analysis_sources"]
 
-reqs, cov = calculate_coverage(result)
+q = quality_indicators(result, metadata)
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Files", metadata["file_count"])
 c2.metric("Lines of Code", metadata["total_line_count"])
 c3.metric("Components", len(result.get("components", [])))
 c4.metric("Business rules", len(result.get("business_rules", [])))
-c5.metric("Coverage", f"{cov}%")
+c5.metric("Files described", f"{q['file_pct']}%",
+          help="Share of the submitted files that at least one row refers to. "
+               "This is not a measure of how much of the application has been captured — "
+               "no automatic measure can tell you that.")
+
+with st.expander("How well grounded is this analysis?"):
+    st.caption("These numbers describe how solid the rows are, not how complete the picture is.")
+    g1, g2, g3 = st.columns(3)
+    g1.metric("Rows with evidence", f"{q['evidenza_pct']}%", help=f"{q['righe']} rows in total")
+    g2.metric("HIGH confidence", f"{q['confidenza_alta_pct']}%")
+    g3.metric("Unresolved calls", q["dipendenze_non_risolte"],
+              help="Call patterns whose target is not declared in the submitted code: "
+                   "either outside the perimeter, or noise.")
+    st.write("**Sections filled:** " + ", ".join(
+        ("✅ " if v else "⬜ ") + k for k, v in q["sezioni"].items()))
+    if q["file_mai_citati"]:
+        st.warning("No row refers to these files — worth checking whether they were "
+                   "understood at all: " + ", ".join(q["file_mai_citati"][:12])
+                   + (" …" if len(q["file_mai_citati"]) > 12 else ""))
+    risoluzione = metadata.get("dependency_resolution")
+    if risoluzione:
+        st.caption("Dependency resolution — "
+                   f"resolved to a declared component: {risoluzione['resolved_to_declared_component']} · "
+                   f"outside the perimeter: {risoluzione['unresolved_outside_perimeter']} · "
+                   f"discarded as library noise: {risoluzione['discarded_as_library_noise']}")
 
 avvisi = result.get("contract_warnings") or []
 if avvisi:
@@ -785,7 +1012,10 @@ with tabs[0]:
     st.write("**Purpose:**", result.get("application_purpose") or "N/A")
     st.write("**Notes:**", result.get("technical_notes") or "N/A")
     st.caption(f"Model that answered: {st.session_state.get('analysis_model','?')} · "
-               f"batches: {result.get('_lotti', 1)} · contract v{result.get('contract_version','?')}")
+               f"reasoning: {result.get('_ragionamento','?')} · "
+               f"batches: {result.get('_lotti', 1)} · "
+               f"took {result.get('_durata_s','?')}s · "
+               f"contract v{result.get('contract_version','?')}")
 
 with tabs[1]:
     result["business_processes"] = render_contract_section("business_processes", result, "bp_edit")
@@ -832,8 +1062,12 @@ with tabs[5]:
         diagramma = dai_dati if sorgente == "Built from the tables" else dal_modello
     else:
         diagramma = result.get(campo) or dai_dati or dal_modello
-        if scelte == ["Built from the tables"]:
-            col_b.caption("Built from the tables — the model did not return this one.")
+    fonte_scelta = (result.get("_diagrammi_fonte") or {}).get(campo, "")
+    if fonte_scelta == "dati":
+        st.caption("Source: built from the validated tables. "
+                   "Use «Rebuild» below after correcting rows to keep it in step.")
+    elif fonte_scelta == "modello":
+        st.caption("Source: written by the model.")
 
     if st.button("🔄 Rebuild from the current tables", use_container_width=True,
                  help="Redraws all four diagrams from the rows as they are now, "

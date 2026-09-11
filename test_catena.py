@@ -359,8 +359,11 @@ P("il diagramma che il modello ha dato resta il suo",
   arricchito["mermaid_process_flow"] == arricchito["_diagrammi_dal_modello"]["mermaid_process_flow"])
 P("entrambe le versioni restano disponibili per il confronto",
   set(arricchito["_diagrammi_dai_dati"]) == set(diagrams.COSTRUTTORI))
-P("l'app dice quali diagrammi ha dovuto costruire lei",
-  sum(1 for a in arricchito["contract_warnings"] if "built from the validated data" in a) == 3)
+P("la provenienza di ogni diagramma è registrata accanto al disegno",
+  arricchito["_diagrammi_fonte"]["mermaid_process_flow"] == "modello"
+  and sum(1 for v in arricchito["_diagrammi_fonte"].values() if v == "dati") == 3)
+P("un diagramma costruito dai dati NON è un avviso di contratto",
+  not any("built from the validated data" in a for a in arricchito["contract_warnings"]))
 
 grafo = arricchito["mermaid_call_graph"]
 P("il call graph esce dalle dipendenze, con nodi validi",
@@ -371,7 +374,7 @@ P("un id di nodo non comincia mai per cifra",
   all(not re.match(r"^\s*\d", r) for r in grafo.splitlines()[1:]))
 
 vuoto = diagrams.arricchisci(contract.normalizza({}))
-P("senza dati non si inventa un diagramma vuoto",
+P("senza dati non si inventa un diagramma vuoto, e QUELLO sì è un avviso",
   all(not vuoto[c] for c in diagrams.COSTRUTTORI)
   and any("neither the model nor the tables" in a for a in vuoto["contract_warnings"]))
 
@@ -387,6 +390,174 @@ P("i campi mermaid sono ora obbligatori nello schema di Gemini",
 P("gli avvisi di contratto sono in inglese, come l'interfaccia",
   all(not re.search(r"assente|mancante|scartata|risposta non", a)
       for a in contract.normalizza({})["contract_warnings"]))
+
+
+# =============================================================================
+# CONSOLIDAMENTO FRA LOTTI
+# =============================================================================
+base = contract.normalizza({
+    "executive_summary": "Sintesi del lotto 1.",
+    "components": [{"component_name": "EMETTI_FATTURA", "component_type": "PROCEDURE",
+                    "source_file": "fatt.pkb"},
+                   {"component_name": "CALC_SCONTO", "component_type": "PROCEDURE",
+                    "source_file": "sconti.pkb"}],
+})
+consolidato = contract.applica_consolidamento(base, {
+    "executive_summary": "Sintesi dell'intera applicazione.",
+    "application_purpose": "Fatturazione.",
+    "cross_batch_dependencies": [
+        {"source": "EMETTI_FATTURA", "target": "CALC_SCONTO",
+         "dependency_type": "CROSS_BATCH_CALL", "confidence": "HIGH", "evidence": "inventario"},
+        {"source": "EMETTI_FATTURA", "target": "MODULO_INVENTATO",
+         "dependency_type": "CROSS_BATCH_CALL", "confidence": "HIGH", "evidence": "-"},
+    ],
+    "validation_questions": [{"question": "Chi lancia il job notturno?"}],
+})
+P("la sintesi per lotto viene sostituita da quella d'insieme",
+  consolidato["executive_summary"] == "Sintesi dell'intera applicazione.")
+P("il collegamento fra due nomi noti viene tenuto",
+  any(d["target"] == "CALC_SCONTO" for d in consolidato["dependencies"]))
+P("il collegamento con un nome inventato viene buttato",
+  not any(d["target"] == "MODULO_INVENTATO" for d in consolidato["dependencies"])
+  and any("dropped" in a for a in consolidato["contract_warnings"]))
+P("la domanda d'insieme entra nelle domande per lo SME",
+  any("job notturno" in d["question"] for d in consolidato["validation_questions"]))
+P("una risposta inutilizzabile non cancella le sintesi per lotto",
+  contract.applica_consolidamento(
+      contract.normalizza({"executive_summary": "resta"}), None)["executive_summary"] == "resta")
+P("il prompt di consolidamento non contiene codice sorgente, solo l'inventario",
+  "SOURCE CODE" not in contract.prompt_consolidamento(base, [["fatt.pkb"], ["sconti.pkb"]])
+  and "EMETTI_FATTURA" in contract.prompt_consolidamento(base, [["fatt.pkb"], ["sconti.pkb"]]))
+
+# =============================================================================
+# ANALISI STATICA: RISOLUZIONE DELLE CHIAMATE E INDICATORI
+# (serve app.py, quindi si finge Streamlit)
+# =============================================================================
+import types as _types
+
+
+class _FintoSt:
+    def __getattr__(self, k):
+        if k in ("sidebar", "column_config"):
+            return _FintoSt()
+        if k == "cache_data":
+            return lambda **kw: (lambda fn: fn)
+        if k == "stop":
+            def _stop(*a, **kw):
+                raise SystemExit(0)
+            return _stop
+
+        def _f(*a, **kw):
+            if k == "columns":
+                return [_FintoSt() for _ in range(a[0] if a and isinstance(a[0], int) else 3)]
+            if k == "tabs":
+                return [_FintoSt() for _ in a[0]]
+            if k in ("selectbox", "radio"):
+                return a[1][0] if len(a) > 1 and a[1] else ""
+            if k == "select_slider":
+                return kw.get("value") or (kw.get("options") or [""])[0]
+            if k in ("text_input", "text_area"):
+                return kw.get("value", "")
+            if k in ("button", "checkbox"):
+                return False
+            if k == "file_uploader":
+                return []
+            if k == "data_editor":
+                return a[0]
+            return _FintoSt()
+        return _f
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+_st = _FintoSt()
+_st.session_state = {}
+sys.modules["streamlit"] = _st
+sys.modules["streamlit_mermaid"] = _types.SimpleNamespace(st_mermaid=lambda *a, **kw: None)
+_ns = {"__name__": "app_collaudo", "__file__": "app.py"}
+try:
+    exec(compile(open("app.py").read(), "app.py", "exec"), _ns)
+except SystemExit:
+    pass
+app = _types.SimpleNamespace(**_ns)
+
+sorgenti = [
+    {"filename": "fatt.pkb", "language": "Oracle PL/SQL Package Body", "hash": "a",
+     "content": "PROCEDURE EMETTI_FATTURA IS BEGIN CALC_SCONTO(x); UTL_FILE.PUT_LINE(y); "
+                "System.out.println(z); END;"},
+    {"filename": "sconti.pkb", "language": "Oracle PL/SQL Package Body", "hash": "b",
+     "content": "PROCEDURE CALC_SCONTO IS BEGIN NULL; END;"},
+]
+meta = app.extract_technical_metadata(sorgenti)
+tipi = {d["target"]: (d["dependency_type"], d["confidence"]) for d in meta["dependencies"]}
+P("una chiamata a una procedura dichiarata in un ALTRO file diventa CALL certa",
+  tipi.get("CALC_SCONTO") == ("CALL", "HIGH"))
+P("una chiamata fuori dal perimetro resta probabile, ma a confidenza bassa",
+  tipi.get("UTL_FILE.PUT_LINE") == ("PROBABLE_CALL", "LOW"))
+P("il rumore di libreria non arriva nemmeno alle tabelle",
+  "System.out.println" not in tipi and meta["dependency_resolution"]["discarded_as_library_noise"] >= 1)
+P("in un PL/SQL non nascono più «metodi Java» fantasma",
+  all(c["component_type"] != "JAVA_METHOD" for c in meta["components"]))
+
+java = [{"filename": "F.java", "language": "Java", "hash": "c",
+         "content": 'public class F { public void tot() { C c = new Cliente("x"); logger.info("o"); } }'}]
+mj = app.extract_technical_metadata(java)
+P("`new Cliente(...)` non è una chiamata a una procedura",
+  not any(d["target"].lower() == "cliente" for d in mj["dependencies"]))
+
+ind = app.quality_indicators(contract.normalizza({
+    "business_rules": [{"rule_name": "R", "condition": "c", "source_file": "fatt.pkb",
+                        "evidence": "riga 1", "confidence": "HIGH"}]}), meta)
+P(f"gli indicatori dicono quali file non ha citato nessuno ({ind['file_mai_citati']})",
+  ind["file_mai_citati"] == ["sconti.pkb"] and ind["file_pct"] == 50)
+P("l'indicatore misura l'ancoraggio, non promette completezza",
+  ind["evidenza_pct"] == 100 and "coverage" not in str(ind.keys()).lower())
+
+
+# =============================================================================
+# IL LIVELLO DI RAGIONAMENTO
+# =============================================================================
+from model_chain import LIVELLI, _almeno, _su_di_uno
+
+P("la scala del ragionamento sale di un gradino per volta",
+  _su_di_uno("minimal") == "low" and _su_di_uno("low") == "medium" and _su_di_uno("high") is None)
+P("il livello scelto viene alzato al minimo che il modello pretende",
+  _almeno("minimal", "medium") == "medium" and _almeno("high", "low") == "high")
+
+livelli_visti = []
+
+
+def _post_thinking(url, **kw):
+    corpo = kw.get("json") or {}
+    liv = ((corpo.get("generationConfig") or {}).get("thinkingConfig") or {}).get("thinkingLevel")
+    livelli_visti.append(liv)
+    if liv in ("minimal", "low"):
+        return FintaRisposta(400, {}, "thinkingLevel LOW is not supported for this model")
+    return FintaRisposta(200, {"candidates": [
+        {"content": {"parts": [{"text": "OK"}]}, "finishReason": "STOP"}]})
+
+
+finto({"*": {"stato": 200}})
+model_chain.requests.post = _post_thinking
+mem = MemoriaRam()
+AI = CatenaModelli(provider="gemini", chiave="k", memoria=mem, ragionamento="minimal")
+r = AI.chiedi("x")
+P(f"un modello che rifiuta i livelli bassi fa salire la scala, non fallisce (visti: {livelli_visti})",
+  r.testo == "OK" and livelli_visti[0] == "minimal" and "medium" in livelli_visti)
+P("il livello minimo di quel modello si ricorda",
+  mem.leggi_adatta(AI.p.spazio(), r.modello).get("thinking_min") in ("low", "medium", "high"))
+
+livelli_visti.clear()
+finto({"*": {"stato": 200}})
+model_chain.requests.post = _post_thinking
+AI = CatenaModelli(provider="gemini", chiave="k", memoria=MemoriaRam(), ragionamento="high")
+AI.chiedi("x")
+P("la prova di contatto usa sempre il livello più basso, per non sforare i 5 s",
+  livelli_visti[0] == "minimal")
 
 print()
 print(f"{sum(ESITI)}/{len(ESITI)} casi passati")

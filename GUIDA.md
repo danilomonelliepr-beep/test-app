@@ -84,8 +84,11 @@ lo chiede invece di inventare.
 
 ## Il giro completo
 
-1. **Si caricano i file.** Codice Oracle, COBOL, Java, Python, e altri. Oppure
-   si incolla direttamente un pezzo di codice.
+1. **Si caricano i file.** Codice Oracle, COBOL, Visual Basic, Java, Python e
+   qualunque altro file di testo: se l'estensione non è fra le ottanta
+   conosciute, entra lo stesso e il modello capisce il linguaggio dal
+   contenuto. Solo i file binari vengono respinti. Oppure si incolla
+   direttamente un pezzo di codice.
 2. **L'applicazione legge meccanicamente.** In pochi secondi, senza costi.
 3. **Manda tutto al modello.** Se il codice è tanto, lo divide in lotti e ne
    manda uno alla volta, senza mai spezzare un file a metà.
@@ -94,20 +97,60 @@ lo chiede invece di inventare.
 5. **Mostra tutto in schede**: sintesi, regole di business, architettura, flussi
    di dati, rischi, diagrammi, domande per l'esperto.
 6. **L'esperto valida.** Spunta, corregge, cancella.
-7. **Si esporta** in Word, PDF o dati grezzi.
+7. **Si esporta** in Word, PDF o dati grezzi. Il file dei dati grezzi si può
+   ricaricare in un altro momento per riprendere la validazione da dove era.
 
 ## Quanto ci mette
 
-Dipende quasi tutto da una manopola: **quanto si lascia pensare il modello**
-prima che risponda. Lo stesso modello, con il ragionamento al massimo, impiega
-minuti dove al minimo impiega secondi. La manopola è nella barra laterale
-(*Reasoning effort*), e l'applicazione la adatta da sola: alcuni modelli non
-accettano i livelli più bassi, e in quel caso lei sale di un gradino invece di
-fermarsi con un errore.
+Il tempo lo fa la risposta, non la domanda: il modello scrive qualche decina
+di parole al secondo, e una risposta completa sono minuti. Un'analisi vera
+dura minuti, non secondi — si stanno leggendo decine di migliaia di righe — e
+la barra di avanzamento mostra i secondi che passano e i lotti finiti. Quattro
+manopole per accorciarla, tutte nella barra laterale:
 
-Detto questo, un'analisi vera dura minuti, non secondi: si stanno leggendo
-decine di migliaia di righe. La barra di avanzamento mostra i secondi che
-passano, e alla fine è scritto quanto è durata.
+- **Profondità.** «Quick» chiede solo le sezioni che ripagano il lavoro
+  (processi, regole, componenti, dipendenze, interfacce, dati, rischi, domande)
+  e una risposta lunga meno della metà: grosso modo metà tempo. «Full» chiede
+  tutto. I diagrammi si costruiscono comunque dalle tabelle.
+- **Quanto si lascia pensare il modello** prima che risponda (*Reasoning
+  effort*). Lo stesso modello, con il ragionamento al massimo, impiega minuti
+  dove al minimo impiega secondi. L'applicazione adatta la scelta da sola:
+  alcuni modelli non accettano i livelli più bassi, e in quel caso sale di un
+  gradino invece di fermarsi con un errore.
+- **Lotti insieme.** Quando il codice è tanto e viene diviso in lotti, se ne
+  possono mandare al modello fino a quattro alla volta. Più veloce, ma consuma
+  la quota più in fretta: con una chiave gratuita conviene restare a uno o due.
+- **Memoria del lavoro fatto.** Un lotto già analizzato — stessi file, stesse
+  impostazioni — non si ripaga: si rilegge dal disco, anche il giorno dopo,
+  anche da un collega sulla stessa macchina. Aggiungere un file costa solo quel
+  file. «Analyse again from scratch» la ignora.
+
+## Quando il modello si ferma a metà
+
+Succede, quando la risposta è lunga: il modello arriva al tetto di parole e si
+ferma prima della fine. L'applicazione lo sa da un segnale che il modello mette
+in fondo alla risposta solo quando ha davvero finito. Se manca, gli chiede di
+**continuare dal punto esatto** in cui si è fermato, con lo stesso modello — mai
+con un altro, che ricomincerebbe da capo — fino a due volte da sola.
+
+Se non basta, in cima alla pagina compaiono tre scelte, con scritto quali
+lotti e quali file sono a metà: *Continue with the same model*; *Keep what was
+written*, che tiene le righe già scritte e chiude lì; *Discard and start over*,
+che butta tutto e riaccende l'avvio. Se il modello che scriveva ha smesso di
+rispondere — quota finita, servizio giù — compare anche *Continue with the next
+model*: il seguito passa al modello successivo, e il documento dirà che quel
+lotto l'hanno finito in due. L'applicazione non cambia mai modello da sola a
+metà di una risposta; ma non lascia nemmeno nessuno fermo. Finché la risposta
+non è completa non si può chiederne una nuova: prima si finisce, in uno di
+questi modi, poi eventualmente si rifà.
+
+## Interrompere e riprendere
+
+Il lavoro di validazione dura giorni, e una scheda del browser no. Il JSON che
+si scarica dalla scheda *Export* contiene tutto — righe, spunte, correzioni,
+chi ha risposto — e si ricarica dal pannello *Or resume a saved analysis* sotto
+il passo 2: si riprende esattamente da dove si era. Vale anche per i file
+salvati con le versioni precedenti dell'applicazione.
 
 ## I diagrammi
 
@@ -165,20 +208,24 @@ perderebbe la giornata. Dice che la chiave è sbagliata.
 
 ## Architettura
 
-Applicazione Streamlit, otto moduli Python più uno script di servizio, nessun
+Applicazione Streamlit, otto moduli Python più tre script di servizio, nessun
 database, nessuno stato sul server oltre alla sessione.
 
 | File | Responsabilità |
 |---|---|
-| `app.py` | Interfaccia, analisi statica, orchestrazione, stato di sessione |
+| `app.py` | Pagina, analisi statica, orchestrazione, stato di sessione |
+| `ui.py` | Tema, componenti e marcatori di provenienza dell'interfaccia |
 | `model_chain.py` | Scoperta, prova e scalata dei modelli sui tre provider |
 | `contract.py` | Il contratto JSON: prompt, schema, riparazione, normalizzazione |
 | `diagrams.py` | I quattro diagrammi ricavati dai dati strutturati |
 | `mermaid_render.py` | Mermaid → PNG, in locale (mmdc) o come ricaduta remota |
-| `exporter.py` | PDF (ReportLab) e Word (python-docx) |
-| `test_catena.py` | 83 casi, senza rete, senza chiavi, senza costi |
-| `guida_pdf.py` | Rigenera questo documento in PDF (servizio, non serve all'app) |
-| `.streamlit/config.toml` | Tema di Streamlit, con gli stessi colori di `ui.py` |
+| `exporter.py` | PDF (ReportLab) e Word (python-docx): una descrizione, due rese |
+| `fonts/` | IBM Plex per il PDF (licenza OFL, con il file di licenza accanto) |
+| `test_catena.py` | 142 casi, senza rete, senza chiavi, senza costi |
+| `avvia.py` | Installa quello che manca, configura Streamlit e apre l'applicazione |
+| `verifica.py` | Controlla che un clone sia completo, senza toccare niente |
+| `guida_pdf.py` | Rigenera le due guide (italiano e inglese) in PDF (servizio, non serve all'app) |
+
 
 Le dipendenze fra moduli vanno in una direzione sola: `app` → tutti;
 `exporter` → `mermaid_render`; `diagrams` → `contract`. Nessun ciclo, e
@@ -201,14 +248,30 @@ flowchart TD
 
 ## Fase 1 — Ingestione
 
-`build_source_collection` decodifica ogni file provando UTF-8, UTF-8-BOM,
-CP1252, Latin-1 in quest'ordine (i sorgenti legacy sono quasi sempre CP1252 o
-EBCDIC convertito male), calcola uno SHA-256 troncato per file e riconosce il
-linguaggio dall'estensione. Tetti: 2 MB per file, 1,5 M caratteri in totale.
+`build_source_collection` accetta qualunque file, respinge i binari (un byte
+nullo nei primi 8 KB), decodifica provando UTF-8, UTF-8-BOM, CP1252, Latin-1 in
+quest'ordine (i sorgenti legacy sono quasi sempre CP1252 o EBCDIC convertito
+male), calcola uno SHA-256 troncato per file e riconosce il linguaggio
+dall'estensione — ottanta conosciute, le altre marcate «Unknown» e lasciate al
+modello. Tetti: 2 MB per file, 1,5 M caratteri in totale.
 
-`split_into_batches` divide in lotti da ~120.000 caratteri ordinando per
-dimensione decrescente e **senza mai spezzare un file**: un file tagliato a metà
-produce regole di business monche, che è peggio di un file in meno.
+**Profondità.** `PROFONDITA` in `contract.py` definisce cosa chiedere: «quick»
+otto sezioni e 7.000 token di risposta, «full» tutto e 16.000. Prompt, schema
+nativo e normalizzazione leggono la stessa struttura; le sezioni saltate
+restano vuote senza avvisi.
+
+**Lotti in parallelo e cache.** `analyze_legacy_application` fa la prova di
+contatto una volta, poi manda i lotti a un `ThreadPoolExecutor` (1–4 thread a
+scelta); l'avanzamento si aggiorna solo dal thread principale. Prima di
+chiedere, ogni lotto cerca in `cache/` una risposta con la stessa chiave —
+impronte dei file, contratto, provider, preferenza, ragionamento, profondità —
+e la riusa; dopo, la scrive.
+
+`split_into_batches` divide in lotti da ~120.000 caratteri **senza mai spezzare
+un file** (un file tagliato a metà produce regole di business monche, che è
+peggio di un file in meno) e **tenendo insieme i file che si chiamano fra
+loro**, presi dal grafo delle dipendenze del parser: due file legati finiti in
+lotti diversi non li guarda insieme nessuno.
 
 ## Fase 2 — Analisi statica
 
@@ -223,11 +286,15 @@ condizione.
 **Riconoscimento a espressioni regolari** per quello che sqlglot non copre:
 
 - componenti: `PROCEDURE`, `FUNCTION`, `PACKAGE`, metodi Java, `def` Python,
-  `function` JavaScript, paragrafi COBOL;
+  `function` JavaScript, paragrafi COBOL, `Sub`/`Function`/`Property`/`Class`
+  di Visual Basic, `sub` Perl, step JCL — **ogni pattern solo sul suo
+  linguaggio**, tutti insieme solo se il linguaggio è ignoto;
 - dipendenze dichiarate: `import`, `require`, `#include`, `COPY`, `/COPY`;
-- dipendenze probabili: `CALL`, `EXEC`, `PERFORM`, e il pattern generico
-  «identificatore seguito da parentesi», con esclusione dei costruttori
-  (`new X(`) e di ~120 nomi di libreria;
+- chiamate: in Python dall'albero sintattico (`ast`), quindi nodi `Call` veri;
+  in SQL e PL/SQL l'albero di sqlglot **conferma** i riscontri
+  dell'espressione regolare (da solo perderebbe quello che finisce nei nodi
+  `Command`); altrove `CALL`, `EXEC`, `PERFORM` e il pattern generico, con
+  esclusione dei costruttori (`new X(`) e di ~120 nomi di libreria;
 - interfacce: URL, riferimenti a file, REST, SOAP, code di messaggi, SMTP, FTP;
 - rischi: credenziali scritte nel codice (`CRITICAL`), SQL dinamico (`HIGH`),
   gestori di eccezione generici o vuoti, `COMMIT` espliciti, `SELECT *`;
@@ -237,11 +304,11 @@ Tetto di **300 righe per tipo di ritrovamento per file**. Senza, il pattern
 generico su un Java da 5.000 righe produce migliaia di dipendenze finte che
 affogano quelle vere e raddoppiano il costo del prompt.
 
-`resolve_dependencies` chiude la passata: ogni dipendenza probabile viene
-confrontata con l'indice dei componenti di **tutta** la codebase. Se il bersaglio
-è dichiarato da qualche parte diventa una `CALL` a confidenza `HIGH`; se è un
-nome di libreria si butta; altrimenti resta `PROBABLE_CALL` a `LOW` con scritto
-che punta fuori dal perimetro. I tre conteggi finiscono nei metadati e in
+`resolve_dependencies` chiude la passata su due assi distinti — «è davvero una
+chiamata?» e «il bersaglio sta nel codice caricato?». Dichiarato da qualche
+parte → `CALL` a `HIGH`; confermato dall'albero ma fuori dal perimetro → `CALL`
+a `MEDIUM`; né l'uno né l'altro → `PROBABLE_CALL` a `LOW`; nome di libreria →
+si butta. I tre conteggi finiscono nei metadati e in
 interfaccia.
 
 `metadata_for_prompt` filtra i metadati sul lotto corrente e taglia il dettaglio
@@ -294,6 +361,11 @@ partenza**: se un modello lo rifiuta con un 400 (alcuni non scendono sotto
 riprova — chi sceglie «Fast» ottiene il più veloce che quel modello sa fare, non
 un errore. Un adattamento non consuma i tentativi riservati ai guasti veri, e la
 prova di contatto resta sempre al livello più basso.
+
+**Il modello preferito.** Il menù *Preferred model* nella barra laterale si
+riempie con i modelli che la scoperta trova sulla chiave; *Automatic* lascia
+decidere la catena, una voce specifica la mette in testa (`preferito` in
+`CatenaModelli`), con gli altri come rete e la scelta che vince sulla memoria.
 
 **Scoperta.** `GET /v1beta/models` (Gemini), `GET /v1/models` (Anthropic),
 `GET /openai/deployments` (Azure). Si filtrano `-lite`, `preview`, `exp`,
@@ -381,6 +453,20 @@ contro l'inventario — in quella chiamata il modello non ha il codice davanti,
 quindi un nome inventato non lo smentirebbe nessuno. Se fallisce, si tengono le
 sintesi per lotto e lo si dichiara.
 
+**Completezza e continuazione.** Il contratto chiede che l'ultima proprietà sia
+`"complete": true`. `risposta_completa` la considera completa se il JSON si
+legge per intero e c'è il tag, o — senza tag — se il provider non l'ha
+segnalata come tagliata. Se non lo è, `CatenaModelli.continua` chiede il
+seguito **allo stesso modello** (su Anthropic il pezzo scritto è il prefill e
+il modello continua la stessa frase; su Gemini e Azure torna come turno
+precedente), `unisci_continuazione` lo riattacca tagliando la sovrapposizione,
+e si ricontrolla. Due giri automatici; poi le quattro scelte (stesso modello, modello successivo
+via `CatenaModelli.successivo` solo se il primo non risponde più, tenere il
+parziale, buttare tutto). Una continuazione automatica che fallisce non fa
+cadere l'esecuzione: il lotto resta a metà con la causa. Lo stato dei lotti —
+prompt, testo, modello — vive nella sessione e non nel JSON esportato, perché
+il prompt contiene il sorgente del cliente.
+
 `unisci` somma i lotti sulle stesse chiavi di deduplica, concatena i testi, per
 i diagrammi tiene il più completo (due `flowchart TD` incollati non si
 disegnano) e rinumera.
@@ -415,6 +501,11 @@ dichiarazione di quanti restano fuori; quando si taglia, escono per prime le
 
 ## Fase 7 — Rendering ed esportazione
 
+La configurazione del disegno (tema, etichette SVG invece che HTML, larghezza
+di ritorno a capo) viene scritta **dentro** il diagramma come direttiva
+`%%{init: …}%%`: un file di configurazione vale solo per il disegno locale,
+mentre il servizio esterno riceve soltanto il codice.
+
 `mermaid_render.rendi` prova nell'ordine: `mmdc` locale
 (`@mermaid-js/mermaid-cli`, cioè mermaid.js dentro un Chromium headless), poi
 `npx` se esplicitamente abilitato, poi `mermaid.ink` come ricaduta.
@@ -443,40 +534,60 @@ trovato il parser.
 Streamlit riesegue lo script intero a ogni interazione. Di conseguenza:
 
 - il risultato vive in `st.session_state` e le modifiche delle tabelle ci
-  rientrano a ogni giro;
-- `analysis_signature` (impronta dei file + provider + versione del contratto)
-  evita di rilanciare un'analisi a pagamento identica alla precedente;
+  rientrano a ogni giro; lo stato dei lotti (prompt, testo scritto finora,
+  modello) sta in `st.session_state["lotti_stato"]`, separato dal risultato,
+  perché il prompt contiene il sorgente del cliente e non deve finire nel JSON
+  esportato;
+- `analysis_signature` (impronta dei file + provider + profondità + versione
+  del contratto) evita di rilanciare un'analisi identica alla precedente;
+- la cartella `cache/` (visibile, esclusa da git, cancellabile) tiene i lotti
+  già analizzati — chiave: impronte dei file, contratto, provider, preferenza,
+  ragionamento, profondità — e la memoria della catena; solo i lotti completi
+  ci finiscono;
 - PDF e Word si generano **su richiesta** e sono in `st.cache_data`: prima ogni
-  spunta su una casella rigenerava entrambi, scaricando otto immagini.
+  spunta su una casella rigenerava entrambi, scaricando otto immagini;
+- il JSON esportato porta anche `_metadata` e chi ha risposto, e si ricarica
+  con `carica_analisi_salvata`, che lo fa passare dal contratto come una
+  risposta del modello (spunte comprese) e ricostruisce i diagrammi.
 
 ## Collaudo
 
-`python test_catena.py` — 83 casi, nessuna rete, nessuna chiave, nessun costo.
+`python test_catena.py` — 142 casi, nessuna rete, nessuna chiave, nessun costo.
 Il provider è finto: si dichiara quali modelli rispondono e come, e si osserva il
 comportamento. Copre scoperta e ordinamento, scalata, riprova selettiva, memoria,
 messaggi nelle due lingue, tetti temporali, adattamento dei parametri,
 riparazione del JSON, enum, deduplica, Mermaid, lotti, geometria delle immagini
 e costruzione dei diagrammi.
 
-## Limiti noti e dove mettere le mani
+## Limiti noti
 
-- **Le chiavi stanno nella barra laterale.** Va bene per un prototipo; per più
-  utenti servono variabili d'ambiente o un gestore di segreti.
 - **Nessun numero dice quanta parte dell'applicazione è stata catturata**, e
   nessuno può dirlo: servirebbe conoscere in anticipo la risposta. Gli
-  indicatori misurano l'ancoraggio (file citati, righe con evidenza, confidenza,
-  chiamate non risolte); l'elenco dei file che nessuna riga menziona è il
-  segnale più utile che l'applicazione sa dare su se stessa.
-- **Le chiamate fuori perimetro restano un sospetto.** Ora sono marcate `LOW` e
-  contate, ma distinguere una chiamata vera da un cast o da un costruttore in
-  ogni linguaggio richiede un parser per linguaggio, non un'espressione
-  regolare.
-- **Il process flow del modello resta migliore del nostro** quando lui lo
-  produce: sa mettere i passi in ordine di esecuzione, cosa che dalle tabelle
-  non si ricava. Non è un difetto: è il motivo per cui il suo disegno viene
-  tenuto quando c'è.
+  indicatori misurano l'ancoraggio (file citati, componenti e tabelle del
+  parser effettivamente descritti, righe con evidenza, confidenza, chiamate non
+  risolte). I **file muti** — quelli pieni di IF e CASE da cui non è uscita
+  nessuna regola — sono il segnale più forte che l'applicazione sa dare su sé
+  stessa.
+- **Java, COBOL e RPG restano sull'euristica.** In Python le chiamate si leggono
+  dall'albero sintattico e in SQL l'albero le conferma; per gli altri linguaggi
+  servirebbe un parser dedicato, che è un progetto a sé. Quelle righe restano
+  marcate e contate per quello che sono.
 - **Il consolidamento vede l'inventario, non il codice.** Può collegare due nomi
-  già trovati, non scoprire quello che nessun lotto ha visto.
-- **Il Word usa IBM Plex solo se è installato** sulla macchina di chi lo apre:
-  Word non incorpora i caratteri. La struttura e i colori restano, cambia la
-  faccia. Nel PDF il problema non c'è, i font sono dentro il file.
+  già trovati, non scoprire quello che nessun lotto ha visto. I lotti ora si
+  formano seguendo le dipendenze, quindi ha molto meno da recuperare — ma il
+  buco non è chiuso.
+- **Le chiavi stanno nella barra laterale.** Va bene per un prototipo; per più
+  utenti servono variabili d'ambiente o un gestore di segreti.
+- **Il Word usa Arial e Courier New**, non i caratteri dell'applicazione: sono
+  gli unici che esistono ovunque, e un documento di consegna deve apparire
+  uguale a chiunque lo apra. Il PDF ha i font dentro il file e usa IBM Plex.
+- **Un documento non validato vale quanto una bozza.** L'applicazione produce
+  una prima lettura ragionata; la firma la mette una persona.
+
+## Nota sul contratto
+
+Il contratto JSON è alla versione **2.1**. Un JSON esportato si ricarica dal
+pannello *«Or resume a saved analysis»* sotto il passo 2, con le spunte e le
+correzioni dell'esperto; anche quelli salvati con la 2.0 — il campo `steps`,
+che manca, resta vuoto, e nelle analisi vecchie i diagrammi non avranno
+l'ordine di esecuzione dei passi.

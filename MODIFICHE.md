@@ -1,14 +1,24 @@
 # Modifiche — Legacy Application Knowledge Extractor
 
-Versione contratto JSON: **2.0** · Collaudo: `python test_catena.py` → 83/83
+Versione contratto JSON: **2.1** · Collaudo: `python test_catena.py` → 142/142 · Aggiornato al 14 settembre 2026
 
-Quattro blocchi: **A** la catena modelli presa da Nuvia, **B** il contratto JSON,
+Dodici blocchi, in ordine cronologico: **A** la catena modelli presa da Nuvia, **B** il contratto JSON,
 **C** difetti trovati per strada e robustezza, **D** i diagrammi (disegno locale e
 correzione dello schiacciamento nel PDF), **E** i diagrammi mancanti, **F** i limiti dichiarati nella guida,
 **G** velocità e provenienza dei diagrammi,
 **H** gli id che facevano esplodere il disegno,
 **I** interfaccia e accessibilità,
-**J** i documenti.
+**J** i documenti,
+**K** avvio e installazione,
+**L** i limiti dichiarati, chiusi,
+**M** il controllo generale,
+**N** il secondo controllo,
+**O** i formati accettati,
+**P** la velocità,
+**Q** le risposte a metà,
+**R** la guida,
+**S** la scelta del modello,
+**T** le vie d'uscita da una risposta a metà.
 
 ---
 
@@ -90,7 +100,7 @@ non possono divergere.
 | C12 | **Controllo dell'endpoint Azure** prima di partire, e **il deployment scritto a mano resta sempre primo in catena**. | Su Azure il nome chiamabile è il deployment, che solo chi ha creato la risorsa conosce: non è derivabile e non va scavalcato dalla scoperta. |
 | C13 | **Metriche in interfaccia**: aggiunte «Business rules» e il modello che ha risposto, i lotti eseguiti, la versione del contratto. | Serve sapere chi ha scritto il documento che si sta per firmare. |
 | C14 | **Sorgente del diagramma sempre consultabile** in un pannello, anche quando il disegno riesce. | Quando un diagramma non si disegna, il sorgente è l'unico modo per capire perché. |
-| C15 | **Collaudo automatico `test_catena.py`** — 83 casi, nessuna rete, nessuna chiave, nessun costo: scoperta, scalata, memoria, messaggi, tetti, riparazione JSON, enum, Mermaid, lotti. | Porting del collaudo di Nuvia. È il modo per cambiare una regola e sapere subito cosa si rompe. |
+| C15 | **Collaudo automatico `test_catena.py`** — 142 casi, nessuna rete, nessuna chiave, nessun costo: scoperta, scalata, memoria, messaggi, tetti, riparazione JSON, enum, Mermaid, lotti. | Porting del collaudo di Nuvia. È il modo per cambiare una regola e sapere subito cosa si rompe. |
 | C16 | **`requirements.txt`**: tolti `openai`, `anthropic`, `google-genai`; `requests` è ora una dipendenza dichiarata dell'app, non solo dell'esportatore. | Vedi A16. Tre dipendenze pesanti in meno da aggiornare e da far passare in azienda. |
 | C17 | **README vero** (prima conteneva la parola «Ciao») e questo elenco. | — |
 
@@ -258,6 +268,10 @@ prima di tutto da dove viene ogni riga e quanto è solida.
 | # | Modifica | Perché |
 |---|---|---|
 | I25 | **I componenti nuovi verificano che Streamlit li sappia fare** (`segmented_control`, `toggle`, `container(border=…)`, `toast`): se manca, si ripiega su un controllo equivalente. | Un'installazione più vecchia perde un bordo, non una funzione. |
+| I27 | **L'aspetto non dipende da una configurazione esterna.** Gli stessi colori vengono riapplicati ai controlli di Streamlit (cursori, caselle, interruttori, bordi di fuoco) via CSS, che viaggia dentro `ui.py`. Il file resta per il limite di caricamento e la barra strumenti. | Una cartella che comincia col punto è invisibile nel gestore file e viene saltata dal caricamento per trascinamento su GitHub: il progetto arrivava senza, partiva lo stesso, e mostrava l'accento rosso di serie che litiga con la scala di gravità. Un aspetto che dipende da un file nascosto è una dipendenza fragile. |
+| I28 | **`ui.tema_configurato()`** dice se le impostazioni di Streamlit sono quelle nostre. | Evita mezz'ora di dubbi a chi lancia `streamlit run app.py` a mano e trova qualcosa fuori posto. |
+| I29 | **Nuovo `verifica.py`**: dopo un clone dice in dieci righe cosa manca e come si rimedia — file, cartelle nascoste, pacchetti, chiavi, versione di Python. Per i diagrammi **disegna davvero** un diagramma da due nodi invece di controllare che il comando esista. | `mmdc` può essere installato e non disegnare, perché gli manca il browser che si porta dietro: il comando c'è, la verifica diceva «ok», e il difetto saltava fuori dentro un'esportazione. |
+| I30 | **`fonts/LICENSE.txt` e `fonts/README.md`.** IBM Plex è SIL Open Font 1.1: si ridistribuisce anche in un progetto commerciale, ma la licenza deve viaggiare con i file. | Ridistribuire font senza la licenza è un problema legale, non una svista di forma — e in un repository aziendale è il tipo di cosa che qualcuno controlla. |
 | I26 | **`use_container_width` sostituito con `width="stretch"`**, deciso guardando la firma vera della funzione invece del numero di versione. | Il vecchio nome è in via di rimozione e riempiva la console di avvisi. Guardare la firma funziona anche sulle versioni in mezzo. |
 
 ---
@@ -303,6 +317,211 @@ com'era mentre tutto il resto cambiava. `exporter.py` è riscritto.
 | J20 | **Word: stessi caratteri, stesse tinte, stesso ordine.** Se IBM Plex non è installato sulla macchina di chi apre il file, Word ricade sul carattere di sistema: la struttura resta, cambia la faccia. | È un limite di Word, non aggirabile senza incorporare i font nel documento. |
 | J21 | **Tabelle allineate a sinistra.** | ReportLab le centra di serie: in un documento allineato a sinistra galleggiavano in mezzo alla pagina. |
 | J22 | **Undici casi in più nel collaudo**: ordinamento, le due accezioni di `source`, i puntini, le otto sezioni, e che PDF e Word si costruiscano davvero. | — |
+
+---
+
+## K · Avvio, installazione, e un'icona che fermava l'analisi
+
+| # | Modifica | Perché |
+|---|---|---|
+| K1 | **CORRETTO: «The analysis stopped: The value "✓" is not a valid emoji».** L'avviso di fine analisi passava un segno di spunta tipografico (U+2713) come icona a `st.toast`, che valida l'icona come emoji vera e alza un'eccezione. L'eccezione veniva raccolta dal `except` dell'analisi e compariva come se l'analisi fosse fallita — mentre era finita bene ed era già salvata. Ora l'avviso non ha icona, e qualunque errore nel mostrarlo viene ignorato. | Un avviso di cortesia non deve poter far fallire tre minuti di lavoro, né far credere che siano andati persi. |
+| K2 | **Niente più cartelle nascoste: `.streamlit/` è sparita.** Le stesse impostazioni (tema, limite di caricamento a 50 MB, barra strumenti ridotta) le passa `avvia.py` come opzioni della riga di comando. | Una cartella che comincia col punto è invisibile nel gestore file e sparisce copiando il progetto per trascinamento. Ora la configurazione è in un file normale, che si vede e si legge. |
+| K3 | **Opzioni, non variabili d'ambiente.** Le variabili equivalenti esistono, ma Streamlit le legge solo quando avvia il server: provate altrove non hanno effetto. | Una configurazione che funziona «solo qualche volta» è peggio di una che manca. Verificato: le opzioni vengono accettate, le variabili in un interprete normale no. |
+| K4 | **Nuovo `avvia.py`: un comando solo.** Controlla i pacchetti Python e li installa, controlla mermaid-cli e lo installa, imposta Streamlit, apre l'applicazione. | Su una macchina pulita `python avvia.py` basta. Le due cose che non possono stare nel repository se le prende da sé. |
+| K5 | **Installa alla luce del sole.** Ogni comando viene stampato prima di essere eseguito; l'installazione Python va nell'interprete corrente, quindi dentro il virtualenv se ce n'è uno attivo; `--niente-installazioni` fa girare solo i controlli. | Installare pacchetti di nascosto tocca l'ambiente di chi lancia il comando, e se quell'ambiente è condiviso il danno non è suo. |
+| K6 | **mermaid-cli si installa accanto al progetto, non globalmente.** `mermaid_render` lo cerca anche in `node_modules/.bin`. | `npm install -g` chiede i permessi di amministratore, che su una macchina aziendale spesso non ci sono. Così non servono. |
+| K7 | **Se manca il browser, `avvia.py` lo scarica** (`npx puppeteer browsers install chrome-headless-shell`) e riprova. | `mmdc` può essere installato e non disegnare: è il caso che prima passava inosservato fino a un'esportazione. |
+| K8 | **`verifica.py` non installa niente.** Resta separato per guardare com'è messa una macchina senza toccarla: un server di qualcun altro, un ambiente condiviso, un controllo prima di un'installazione. | — |
+| K9 | **CORRETTO: le etichette che uscivano dalle caselle.** Con `htmlLabels: true` Mermaid disegna il testo dei nodi dentro un `foreignObject`, cioè HTML vero dentro l'SVG, ma dimensiona il riquadro PRIMA, misurando il testo con il carattere che crede di avere. In un browser headless quel carattere spesso non c'è: si misura con uno, si disegna con un altro, e il testo esce dalla casella. Ora `htmlLabels: false`, con un carattere presente ovunque e una larghezza di ritorno a capo dichiarata. | È il difetto dei diagrammi con le etichette su due righe dentro riquadri alti una riga. Con le etichette SVG, Mermaid misura con lo stesso motore con cui disegna, e la casella viene della misura giusta. |
+| K10 | **La configurazione viaggia dentro il diagramma** (`%%{init: …}%%` in testa, aggiunta al momento del disegno). | Il file di configurazione locale vale solo per `mmdc`. Il servizio esterno riceve **solo il codice**: ecco perché quei diagrammi uscivano col tema di serie e le etichette fuori posto anche dopo aver sistemato la configurazione. Scritta dentro, vale in locale, sul servizio, e anche se qualcuno incolla il codice su mermaid.live. |
+| K11 | **Le direttive `%%{…}%%` sono protette dalla pulizia** delle etichette, e un'intestazione mancante si inserisce dopo, non prima. | Le graffe di una direttiva sono JSON: messe fra virgolette come se fossero un'etichetta rompono la configurazione. E un `flowchart TD` messo sopra la direttiva rompe il diagramma. |
+| K12 | **Bottone «Install what's missing»** nella barra laterale, sotto *Dependencies*, con lo stato del disegno locale scritto sopra. Lancia lo stesso `avvia.py --solo-preparazione` della riga di comando. | Nessuna logica di installazione duplicata dentro l'app che poi si allontana da quella vera. E chi usa l'applicazione non deve aprire un terminale. |
+| K13 | **La prova del disegno sta in un posto solo** (`mermaid_render.prova_locale()`), usata da app, avvio e verifica. | Tre posti che rispondono alla stessa domanda devono rispondere allo stesso modo. |
+| K14 | **`fonts/LICENSE.txt`** resta: IBM Plex è SIL Open Font 1.1, si ridistribuisce anche in un progetto commerciale purché la licenza viaggi con i file. | — |
+
+---
+
+## L · I limiti dichiarati nella guida, chiusi
+
+Contratto JSON: **2.1** (era 2.0 — vedi L7).
+
+| # | Modifica | Perché |
+|---|---|---|
+| L1 | **In Python le chiamate si leggono dall'albero sintattico** (`ast`, libreria standard, nessuna dipendenza in più): nodi `Call` veri, con l'elenco di cosa è definito nel file per escluderlo. Quando l'albero c'è, il pattern generico non gira affatto. | L'espressione regolare «identificatore seguito da parentesi» non distingue una chiamata da un cast, da un costruttore o da una parentesi qualsiasi: produceva righe a confidenza MEDIA che qualcuno doveva controllare a mano. L'albero sa che quello È un nodo Call: confidenza ALTA, nessuna verifica. |
+| L2 | **In SQL e PL/SQL l'albero di sqlglot CONFERMA, non sostituisce.** I nomi che riconosce come chiamate non standard promuovono i riscontri dell'espressione regolare da sospetto a certezza. | Su un package PL/SQL vero sqlglot non arriva in fondo: quello che non capisce diventa un nodo `Command` e sparisce dall'albero. Usarlo come unica fonte faceva **perdere** chiamate che l'espressione regolare vedeva benissimo — un passo indietro travestito da passo avanti. Trovato provando, non ragionando. |
+| L3 | **Due assi separati: «è una chiamata» e «il bersaglio è nel perimetro».** Confermata e dichiarata → `CALL` / HIGH. Confermata ma fuori dal codice caricato → `CALL` / MEDIUM. Né l'una né l'altra → `PROBABLE_CALL` / LOW. | Prima la conferma dell'albero scavalcava anche il filtro del rumore, e `System.out.println` rientrava come chiamata certa. Sono due domande diverse e vanno risposte separatamente. |
+| L4 | **I lotti seguono il grafo delle dipendenze**, non l'ordine di dimensione. I file che si chiamano fra loro vanno nello stesso lotto quando ci stanno; un gruppo più grande di un lotto viene spezzato, ma mai un file. | Prima due file legati finivano separati per puro ordine alfabetico, e il loro collegamento non lo vedeva nessuno: al consolidamento arriva solo l'inventario, da cui si può indovinare ma non vedere. Il buco non sparisce, si stringe molto. |
+| L5 | **Nuovi indicatori: quanto dei FATTI DEL PARSER è stato descritto.** Quanti dei componenti dichiarati compaiono in almeno una riga del modello, quante delle tabelle trovate sono descritte. | Quanta parte di un'applicazione sia stata capita non lo può dire nessuno — servirebbe conoscere in anticipo la risposta. Ma i fatti del parser sono verità nota, e chiedersi quanti ne sono stati descritti è una domanda vera con una risposta vera. |
+| L6 | **I file muti vengono segnalati**: quelli che contengono IF, CASE o WHEN e non hanno prodotto nemmeno una regola di business. | È il segnale più forte che l'applicazione sa dare su sé stessa. Un file pieno di condizioni da cui non esce nessuna regola è quasi sempre un file che il modello ha saltato, e vale un secondo passaggio su quello solo. |
+| L7 | **Contratto 2.1: `business_processes.steps`**, i passi in ordine di esecuzione. Il diagramma costruito dai dati li incatena nell'ordine dato. | L'ordine di esecuzione è la sola cosa che il modello sa e che dalle tabelle non si ricava: era il motivo per cui il suo disegno restava migliore del nostro. Chiedendolo come dato diventa una riga che l'esperto può correggere, invece di stare dentro un disegno che nessuno può validare — e il disegno si rifà dopo le correzioni. |
+| L8 | **Il Word usa Arial e Courier New**, non più IBM Plex. Il PDF resta su Plex. | Word non incorpora i caratteri se non in un formato offuscato che alcune installazioni aziendali rifiutano, e che gonfia ogni documento di 700 KB. Il risultato sarebbe un documento che si apre bene da noi e con un carattere di ripiego dal cliente: **imprevedibile**, che per un documento di consegna è la cosa peggiore. Due caratteri presenti ovunque danno un documento identico dappertutto. Nel PDF il problema non c'è: i font sono dentro il file. |
+| L9 | **Una rotella che gira mentre il modello lavora.** `st.status` con l'etichetta che cambia a ogni lotto, i secondi trascorsi, i file in lavorazione e le ultime righe del diario; alla fine diventa un riepilogo richiuso. Anche la prova di connessione ha la sua. | Un'analisi vera dura minuti. Senza qualcosa che si muove la pagina sembra bloccata, la gente ricarica, e il lavoro fatto fin lì se ne va. |
+| L10 | **Quindici casi in più nel collaudo**, compresi il file Python illeggibile che non deve far saltare nulla e la chiamata che l'albero SQL non vede e che non deve andare persa. | — |
+
+### Cosa resta aperto
+
+- **Java, COBOL e RPG restano sull'euristica.** Lì un albero sintattico vorrebbe
+  un parser per linguaggio, che è un progetto a sé. Le righe restano marcate e
+  contate per quello che sono.
+- **Il consolidamento vede l'inventario, non il codice.** Ora però i lotti sono
+  formati meglio, quindi ha molto meno da recuperare.
+
+---
+
+## M · Controllo generale (12 settembre 2026)
+
+Lo zip è stato spacchettato in una cartella vuota e tutto è stato fatto girare
+da lì, come farebbe chi lo riceve: collaudo, verifica, avvio, analisi statica,
+pagina intera contro Streamlit reale, PDF e Word. Poi analisi statica del codice
+con pyflakes e confronto fra documenti e file reali.
+
+| # | Trovato | Sistemato |
+|---|---|---|
+| M1 | Le etichette fisse dei diagrammi costruiti dai dati erano in italiano («Questa applicazione», «e altri N non mostrati») dentro documenti in inglese. | Tradotte. I commenti nel codice restano in italiano. |
+| M2 | La tabella dei file in `GUIDA.md` e in `README.md` non elencava `ui.py`, `fonts/`, `avvia.py` e `verifica.py`. | Complete, e coerenti fra loro. |
+| M3 | L'intestazione di questo file diceva ancora contratto 2.0 e «quattro blocchi». | 2.1, dodici blocchi. |
+| M4 | Una variabile e tre import inutilizzati (segnalati da pyflakes). | Rimossi; pyflakes ora tace. |
+| M5 | `markdown` è usato solo da `guida_pdf.py` e non è in `requirements.txt`. | Scelta confermata: è uno script di servizio, e il README dice cosa installare per usarlo. |
+
+Nessun residuo nel pacchetto (`__pycache__`, `node_modules`, cache della
+catena), nessun riferimento a cose rimosse, nessun testo in italiano
+nell'interfaccia, dipendenze dichiarate uguali a quelle usate.
+
+---
+
+## N · Secondo controllo generale: quello che il primo non copriva
+
+Non una ripetizione: tre percorsi che nessun collaudo aveva mai fatto girare
+per intero.
+
+| # | Cosa | Esito |
+|---|---|---|
+| N1 | **L'orchestrazione completa** — lotti → modello → JSON → normalizzazione → unione → consolidamento → statica → diagrammi — con un provider finto, a uno e a tre lotti. | Corretta: una prova di contatto, tre analisi, un consolidamento; id unici fra i lotti; il collegamento fra lotti accettato; le sintesi per lotto sostituite da quella d'insieme. |
+| N2 | **L'installazione vera dei pacchetti Python** con `avvia.py` in un ambiente virtuale vuoto. | Corretta: `pip` li ha installati, e il collaudo è passato nell'ambiente appena riempito. |
+| N3 | **L'installazione locale di mermaid-cli** con `npm`, accanto al progetto. | Corretta: `node_modules/.bin/mmdc` compare e `mermaid_render` lo trova. |
+
+E due difetti veri, trovati per strada.
+
+| # | Trovato | Sistemato |
+|---|---|---|
+| N4 | **Il lavoro dell'esperto viveva solo nella sessione del browser.** Chiusa la scheda, spunte e correzioni erano perse. C'era il download del JSON ma **nessun modo di ricaricarlo** — e la guida diceva che «i JSON della 2.0 si aprono», il che era falso: non esisteva niente che li aprisse. | Nuovo pannello **«Or resume a saved analysis»** sotto il passo 2. Il JSON esportato ora porta con sé anche i metadati del parser e chi ha risposto; ricaricandolo si riprende da dove si era, spunte comprese. I file della versione 2.0 (senza `steps`, con le domande a stringhe) passano dal contratto e salgono alla 2.1. Un file caricato viene letto **una volta sola**: il caricatore resta pieno a ogni giro della pagina, e rileggerlo ogni volta avrebbe cancellato le spunte messe dopo. |
+| N5 | **Il comando che scaricava il browser per mermaid-cli era sbagliato due volte.** La sintassi era rifiutata (stampava l'aiuto), e comunque prendeva un puppeteer diverso da quello di mermaid-cli, quindi scaricava Chrome 131 dove serve la 152: anche riuscendo, `mmdc` non avrebbe trovato il browser. | Ora si usa l'installatore di puppeteer **stesso**, quello dentro `node_modules`: è l'unico che conosce la versione esatta che pretende. Provato: ora fallisce solo per la rete (bloccata nell'ambiente di sviluppo), non per il comando. Il messaggio finale spiega le due vie d'uscita: `PUPPETEER_EXECUTABLE_PATH` verso un Chrome già installato, o `MERMAID_LOCAL_ONLY=1`. |
+| N6 | Con un JSON ricaricato senza metadati, due cifre in testa alla pagina esplodevano (`metadata['file_count']`). | `.get` con un trattino al posto del numero. La pagina intera gira anche da un file vecchio senza metadati. |
+| N7 | **Sei casi in più nel collaudo** sul ricaricamento. | 108 in tutto. |
+
+---
+
+## O · I formati accettati (segnalazione: «non riconosce i .vb»)
+
+Il caricatore aveva un elenco fisso di estensioni, e `.vb` non c'era. La
+correzione giusta non era aggiungerlo all'elenco: era smettere di rifiutare
+file. Un estrattore per il legacy non può sapere in anticipo cosa gli arriverà.
+
+| # | Modifica | Perché |
+|---|---|---|
+| O1 | **Il caricatore accetta qualunque file.** L'elenco delle estensioni serve ora solo a dire al modello che linguaggio sta leggendo; un'estensione ignota entra lo stesso, marcata «Unknown (.xyz)». | Il modello riconosce il linguaggio dal contenuto: è la cosa che gli riesce meglio. Respingere un file per il nome è tenere fuori un'informazione per un dettaglio. |
+| O2 | **I binari vengono respinti con un motivo e un rimedio** (un byte nullo nei primi 8 KB). | Un `.dll` o un `.fmb` decodificato a forza è spazzatura mandata a pagamento al modello. Il messaggio dice di esportare il sorgente come testo. |
+| O3 | **Ottanta estensioni riconosciute**, non venti: tutte le vite di Visual Basic (`.vb`, `.bas`, `.frm`, `.cls`, `.ctl`, `.vbs`, `.asp`), i dialetti PL/SQL (`.prc`, `.fnc`, `.trg`, `.pck`, `.spc`, `.bdy`), il mainframe (`.cpy`, `.jcl`, `.pli`, `.asm`), IBM i per intero (`.sqlrpgle`, `.clle`, `.dds`, `.pf`, `.lf`, `.dspf`), Delphi, PHP, Perl, ABAP, Progress, PowerBuilder, gli script di shell. | Sono i linguaggi in cui il legacy è scritto davvero. |
+| O4 | **Pattern statici per VB**: `Sub`, `Function`, `Property`, `Class`/`Module`, `Imports`; e tre rischi tipici — `On Error Resume Next` (gli errori dopo quella riga spariscono), `GoTo`, `CreateObject` (dipendenza COM risolta a runtime). | Il .vb entrava, ma l'analisi statica lo guardava con gli occhi del PL/SQL. |
+| O5 | **Pattern per JCL**: gli step come componenti, `EXEC PGM=` come dipendenza, `DSN=` come oggetto dato. | Un JCL è la mappa di un batch: chi esegue cosa e su quali dataset. |
+| O6 | **CORRETTO: ogni pattern gira solo sul suo linguaggio.** Prima i pattern di tutti i linguaggi giravano su tutti i file. | È il difetto che il .vb ha reso visibile: la stessa `ApplyDiscount` usciva quattro volte con quattro etichette (`FUNCTION`, `JAVA_METHOD`, `JAVASCRIPT_FUNCTION`, `VB_FUNCTION`), e `End Function` seguito da una riga che comincia con `Public` fabbricava una funzione fantasma di nome Public. Sui file di linguaggio ignoto si provano tutti, che è meglio di niente. |
+| O7 | **`[ \t]+` invece di `\s+`** dopo `PROCEDURE`, `FUNCTION`, `PACKAGE`. | `\s+` attraversa gli a capo: era la meccanica del fantasma. |
+| O8 | **I pattern VB distinguono le maiuscole.** | `Sub`, `Function` e `Property` in VB sono sempre così; senza distinzione, `function` in un commento diventava un componente. |
+| O9 | **Otto casi in più nel collaudo**: il .vb accettato, l'estensione ignota, il binario respinto, VB e JCL riconosciuti, il fantasma che non nasce più, i rischi VB che non girano sui file SQL. | 116 in tutto. |
+
+---
+
+## P · La velocità
+
+Il tempo di un'analisi non lo fa la lettura del codice: lo fa la **scrittura
+della risposta**. Un modello genera qualche decina di token al secondo, e una
+risposta piena da sedicimila token sono minuti. Le tre leve stanno lì.
+
+| # | Modifica | Perché |
+|---|---|---|
+| P1 | **Profondità «Quick»** accanto a «Full», al passo 3. Chiede le otto sezioni che ripagano l'esecuzione — processi, regole, componenti, dipendenze, interfacce, dati, rischi, domande — e mette un tetto alla risposta di 7.000 token invece di 16.000. Analisi d'impatto, mappa applicativa, assunzioni e diagrammi del modello restano vuoti, dichiarati come saltati (non come mancanti); i diagrammi si costruiscono comunque dalle tabelle. | È la leva più grossa che esiste: meno token da scrivere, meno minuti. Grosso modo metà tempo. Il prompt, lo schema nativo e la normalizzazione seguono tutti la stessa scelta, quindi non possono divergere. |
+| P2 | **Lotti in parallelo**: da 1 a 4 insieme, scelto dall'utente (predefinito 2). La prova di contatto si fa una volta sola prima di aprire i thread; l'avanzamento conta i lotti **finiti**, aggiornato solo dal thread principale perché Streamlit lo pretende. | La chiamata al modello è attesa di rete, e tenerne una sola in volo alla volta è tempo buttato. Il tetto lo sceglie chi paga, perché è la sua quota che si consuma più in fretta: su una chiave gratuita conviene restare a 1 o 2. Collaudato con un provider finto: tre lotti da 0,25 s finiscono in 0,26 s. |
+| P3 | **Cache dei lotti su disco**, in `cache/` (visibile, non versionata). Un lotto è identificato dai suoi file, dal contratto e da come è stato chiesto; stessa chiave, stessa risposta, letta dal disco invece di ripagata. Sopravvive alla chiusura della sessione. | Rilanciare dopo aver aggiunto un file paga solo il lotto nuovo; riaprire il giorno dopo non paga niente; due colleghi sulla stessa macchina non pagano due volte. «Analyse again from scratch» la ignora. Quick e Full sono chiavi diverse. |
+| P4 | **La memoria della catena si è spostata in `cache/`** (`catena_modelli.json`): era un file nascosto accanto al codice. | Niente file nascosti, e una sola cartella rigenerabile da ignorare in git. |
+| P5 | **In Overview** si legge la profondità usata e quanti lotti vengono dalla cache. | Chi legge deve sapere se ha davanti un'analisi rapida o completa. |
+| P7 | **Tolti dal pacchetto `package.json` e `package-lock.json`.** Li aveva fabbricati `npm` durante il collaudo dell'installazione ed erano finiti nello zip senza che nessuno li volesse. `avvia.py` ora installa con `--no-save`, e i due nomi sono in `.gitignore`. | Un file nel repository deve esserci perché qualcuno l'ha deciso. |
+| P6 | **Otto casi in più nel collaudo**, sull'orchestrazione intera con un provider finto: il parallelismo misurato, la prova unica, la cache che riusa, il file aggiunto che paga solo il suo lotto, il «da capo» che ripaga tutto, Quick che non segnala come mancante ciò che ha saltato. | 124 in tutto. |
+
+Cosa NON accelera: la prova di contatto (già in memoria per dieci minuti) e
+l'analisi statica (frazioni di secondo). E cosa costa: la cache non sa che il
+modello è migliorato — se cambia il modello o il ragionamento la chiave cambia
+da sola, ma un modello aggiornato sotto lo stesso nome dà la risposta vecchia
+finché non si spunta «from scratch».
+
+---
+
+## Q · Le risposte a metà: si continuano, non si rifanno
+
+Prima, una risposta tagliata dal tetto di token veniva ritentata da capo con lo
+stesso prompt (che non la accorcia), poi consegnata a metà e riparata buttando
+l'ultima riga. E se il modello cadeva, si scendeva al successivo, che avrebbe
+scritto altrettanto. Ora una risposta a metà è una risposta da **continuare**,
+con lo **stesso modello**, dal **punto esatto** in cui si è fermata.
+
+| # | Modifica | Perché |
+|---|---|---|
+| Q1 | **Il tag di chiusura.** Il contratto chiede che l'ultima proprietà dell'oggetto sia `"complete": true`; nello schema di Gemini è obbligatoria e l'ordine è imposto. La risposta è completa se il JSON si legge per intero **e** c'è il tag — oppure, se il tag manca, se il provider non l'ha segnalata come tagliata. | Il tag da solo non basta (un modello può dimenticarlo); il segnale del provider da solo nemmeno (un JSON può chiudersi giusto sul limite). Insieme sono affidabili. E il prompt dice: se finisce lo spazio, non accorciare le righe per farcele stare — fermati, ti verrà chiesto di continuare. |
+| Q2 | **La catena non cambia più modello su una risposta tagliata.** La consegna subito, marcata, e chi chiama chiede il seguito. | Cambiare modello butta via il pezzo scritto per rifarlo con un altro che scriverà altrettanto. |
+| Q3 | **`continua()` nella catena**: stesso modello, niente scoperta, niente prova, niente scalata. Se è occupato si riprova con lui; se è definitivamente giù si fallisce, non si passa a un altro. | Solo chi ha scritto la prima parte sa proseguirla con la stessa voce. |
+| Q4 | **Il seguito si chiede nel dialetto di ciascun provider.** Gemini: il pezzo scritto torna come turno del modello, poi la richiesta di proseguire, in modo testo (il seguito da solo non è un JSON valido e uno schema lo rifiuterebbe). Azure/OpenAI: idem, senza `response_format`. **Anthropic: il pezzo scritto diventa il prefill** e il modello continua la stessa frase senza nemmeno sapere di essersi fermato — il modo migliore che esista; con il ragionamento esteso, dove il prefill non è ammesso, si torna alla forma a turni. | — |
+| Q5 | **Il riattacco.** Il seguito viene ripulito dai recinti markdown e si cerca la sovrapposizione più lunga fra la coda della prima parte e la testa della seconda: i modelli, quando riprendono, ripetono spesso gli ultimi caratteri. | «Discount ov» + «er 100» → «Discount over 100», anche se il modello ripete «Discount ov». |
+| Q6 | **Due continuazioni automatiche** prima di fermarsi. | Se il modello si è fermato a metà, chiedergli di proseguire non è una decisione che valga un clic. Se due giri non bastano, è giusto che sia una persona a decidere se spendere ancora. |
+| Q7 | **Il bottone «Continue with the same model»** compare in cima alla pagina quando una risposta resta incompleta, con scritto quali lotti e quali file. Le righe già scritte si vedono intanto, riparate, con l'avviso che possono cambiare. | Chi guarda sa cosa manca e cosa può fare. |
+| Q8 | **Finché la risposta non è completa, «Analyse the application» è spento**, con scritto perché. Si sblocca a risposta completa (o svuotando i risultati). | È la regola chiesta: prima si finisce, poi eventualmente si rifà. |
+| Q9 | **Il consolidamento aspetta** che tutti i lotti siano completi; **la cache** salva solo i lotti completi. | Un inventario a metà produce collegamenti a metà; una risposta a metà in cache sarebbe una risposta a metà per sempre. |
+| Q10 | **Lo stato dei lotti** (prompt, testo scritto finora, modello, chiave di cache) vive nella sessione, **non** nel risultato esportato. | Il prompt contiene il sorgente del cliente: non deve finire in un JSON che gira per e-mail. Per questo un'analisi incompleta ricaricata da file non si può continuare — lo dice, e sblocca l'avvio. |
+| Q11 | **Otto casi in più nel collaudo**: la continuazione automatica fino al tag, il riattacco a metà parola, il secondo modello mai chiamato, la risposta che resta a metà dopo due giri e si ferma, il bottone che la porta in fondo, il ricomponimento che sblocca l'avvio, il modello occupato riprovato e non sostituito. | 132 in tutto. Corretto anche un collaudo che leggeva la cache vera invece di quella di prova, e passava solo la prima volta. |
+
+---
+
+## R · La guida
+
+| # | Modifica | Perché |
+|---|---|---|
+| R1 | **Guida in inglese**: `GUIDE.md` e `GUIDE.pdf`, traduzione integrale della guida italiana, stessa struttura. `guida_pdf.py` senza argomenti le rigenera tutte e due. | Per i colleghi e i clienti che non leggono l'italiano. |
+| R2 | **Aggiornata su velocità e ripresa**: le quattro manopole (profondità, ragionamento, lotti insieme, memoria del lavoro fatto), la continuazione dal punto in cui il modello si è fermato, il ricaricamento di un'analisi salvata. Nella parte tecnica: profondità, lotti in parallelo, cache, completezza e continuazione, stato di sessione. | Erano cambiamenti recenti e la guida era rimasta indietro. |
+| R3 | **Tolte le sezioni «Cosa non è mai stato provato davvero» e «Da dove cominciare a provare».** Nella guida resta un solo elenco di limiti, di progetto. | Richiesta esplicita: il dettaglio di cosa è stato verificato e come sta in questo file, non nella guida che si consegna. |
+| R4 | Sistemata una sezione della parte 1 in cui il paragrafo sulla continuazione era finito in mezzo a quello sul ragionamento. | — |
+
+---
+
+## S · La scelta del modello
+
+| # | Modifica | Perché |
+|---|---|---|
+| S1 | **«Check the connection» sta subito dopo la chiave** (e l'endpoint, su Azure), prima della scelta del modello. Verifica la chiave e la catena così come la trova, e rifà la scoperta: aggiorna anche il menù qui sotto. | Si controlla la chiave, non una scelta. |
+| S2 | **«Preferred model» è un menù a tendina riempito dai modelli trovati sulla chiave**, dal più nuovo in giù. La prima voce è *Automatic (the chain decides)*; le altre sono i modelli che la scoperta ha trovato, nell'ordine della preferenza (qualità o velocità). La scoperta si fa una volta per chiave e la catena la tiene in memoria sei ore. | Chi sceglie sceglie fra cose che esistono. Prima c'era un campo di testo libero in cui si poteva scrivere qualunque nome. |
+| S3 | **CORRETTO: su Gemini e Claude il campo «Preferred model» non faceva niente.** Il valore veniva passato alla catena come `deployment`, che conta solo per Azure. Si poteva scrivere qualunque cosa e la catena andava per conto suo — e nessuno se ne accorgeva, perché la catena andava comunque. | Ora il modello scelto va in testa alla catena per qualunque provider; se non risponde si ricade sugli altri, il migliore per primo; la scelta della persona vince sulla memoria del modello «buono». |
+| S4 | **Su Azure il menù elenca i deployment** trovati sull'endpoint. Se l'elenco non si può leggere (la chiave può non avere quel permesso), resta un campo di testo per scrivere il nome: è l'unico caso. | Il nome chiamabile su Azure è il deployment, e solo chi ha creato la risorsa lo conosce. |
+| S5 | Le variabili d'ambiente `GEMINI_MODEL`, `ANTHROPIC_MODEL`, `AZURE_OPENAI_DEPLOYMENT` preselezionano la voce del menù, se c'è. | — |
+| S6 | **Quattro casi in più nel collaudo**: il modello scelto provato per primo, la ricaduta sul migliore se è giù, la scelta che vince sulla memoria, un nome non in elenco comunque provato. | 136 in tutto. |
+
+---
+
+## T · Le vie d'uscita da una risposta a metà
+
+Due domande dal campo: c'è un modo per ricominciare da capo se «Continue» non
+funziona? E se il modello che scriveva ha finito la quota, si resta bloccati?
+Risposta di prima: la via d'uscita c'era ma si chiamava «Clear results» in un
+altro posto; e sì, si restava bloccati — la regola «mai cambiare modello a
+metà» era diventata «restare fermi». Peggio: se la quota finiva durante le
+continuazioni automatiche, l'errore faceva cadere **l'intera esecuzione**,
+lotti buoni compresi.
+
+| # | Modifica | Perché |
+|---|---|---|
+| T1 | **CORRETTO: una continuazione automatica che fallisce non fa più cadere l'esecuzione.** Il lotto viene consegnato a metà, con la causa (`quota`, `busy`…), e gli altri lotti restano buoni. | Tre lotti riusciti non devono andare persi perché il quarto si è fermato. |
+| T2 | **Tre vie d'uscita nel pannello**, una accanto all'altra: *Continue with the same model*, *Keep what was written*, *Discard and start over*. | Chi guarda una risposta a metà deve poter scegliere, non solo aspettare. |
+| T3 | **«Continue with the next model»** compare quando il modello che scriveva ha smesso di rispondere: consegna il seguito al modello successivo della catena (`CatenaModelli.successivo`). Le righe già scritte restano; il risultato e il documento dicono quale lotto è stato finito da un modello diverso e da quale. | Il passaggio non avviene mai da solo: è una decisione della persona, e resta scritta. La regola «non cambiare modello a metà» era giusta come regola automatica e sbagliata come muro. |
+| T4 | **«Keep what was written»** accetta i lotti a metà così come sono — le righe già riparate restano — e lo dichiara negli avvisi; il consolidamento parte, l'avvio si sblocca. | A volte quello che c'è basta, e pagare ancora non ha senso. Non finisce in cache: una risposta a metà in cache sarebbe a metà per sempre. |
+| T5 | **«Discard and start over»** butta l'esecuzione e riaccende «Analyse the application». | La via d'uscita chiamata col suo nome, dove serve. |
+| T6 | Quando «Continue with the same model» fallisce, il pannello mostra la causa e apre la via del modello successivo, senza far cadere niente. | — |
+| T7 | **Sei casi in più nel collaudo**: la quota che finisce in continuazione automatica senza far cadere l'esecuzione, il modello dopo interpellato solo su decisione, la risposta chiusa dal secondo modello, l'avviso nel risultato. | 142 in tutto. |
 
 ---
 
@@ -519,6 +738,10 @@ prima di tutto da dove viene ogni riga e quanto è solida.
 | # | Modifica | Perché |
 |---|---|---|
 | I25 | **I componenti nuovi verificano che Streamlit li sappia fare** (`segmented_control`, `toggle`, `container(border=…)`, `toast`): se manca, si ripiega su un controllo equivalente. | Un'installazione più vecchia perde un bordo, non una funzione. |
+| I27 | **L'aspetto non dipende da una configurazione esterna.** Gli stessi colori vengono riapplicati ai controlli di Streamlit (cursori, caselle, interruttori, bordi di fuoco) via CSS, che viaggia dentro `ui.py`. Il file resta per il limite di caricamento e la barra strumenti. | Una cartella che comincia col punto è invisibile nel gestore file e viene saltata dal caricamento per trascinamento su GitHub: il progetto arrivava senza, partiva lo stesso, e mostrava l'accento rosso di serie che litiga con la scala di gravità. Un aspetto che dipende da un file nascosto è una dipendenza fragile. |
+| I28 | **`ui.tema_configurato()`** dice se le impostazioni di Streamlit sono quelle nostre. | Evita mezz'ora di dubbi a chi lancia `streamlit run app.py` a mano e trova qualcosa fuori posto. |
+| I29 | **Nuovo `verifica.py`**: dopo un clone dice in dieci righe cosa manca e come si rimedia — file, cartelle nascoste, pacchetti, chiavi, versione di Python. Per i diagrammi **disegna davvero** un diagramma da due nodi invece di controllare che il comando esista. | `mmdc` può essere installato e non disegnare, perché gli manca il browser che si porta dietro: il comando c'è, la verifica diceva «ok», e il difetto saltava fuori dentro un'esportazione. |
+| I30 | **`fonts/LICENSE.txt` e `fonts/README.md`.** IBM Plex è SIL Open Font 1.1: si ridistribuisce anche in un progetto commerciale, ma la licenza deve viaggiare con i file. | Ridistribuire font senza la licenza è un problema legale, non una svista di forma — e in un repository aziendale è il tipo di cosa che qualcuno controlla. |
 | I26 | **`use_container_width` sostituito con `width="stretch"`**, deciso guardando la firma vera della funzione invece del numero di versione. | Il vecchio nome è in via di rimozione e riempiva la console di avvisi. Guardare la firma funziona anche sulle versioni in mezzo. |
 
 ---
@@ -564,6 +787,211 @@ com'era mentre tutto il resto cambiava. `exporter.py` è riscritto.
 | J20 | **Word: stessi caratteri, stesse tinte, stesso ordine.** Se IBM Plex non è installato sulla macchina di chi apre il file, Word ricade sul carattere di sistema: la struttura resta, cambia la faccia. | È un limite di Word, non aggirabile senza incorporare i font nel documento. |
 | J21 | **Tabelle allineate a sinistra.** | ReportLab le centra di serie: in un documento allineato a sinistra galleggiavano in mezzo alla pagina. |
 | J22 | **Undici casi in più nel collaudo**: ordinamento, le due accezioni di `source`, i puntini, le otto sezioni, e che PDF e Word si costruiscano davvero. | — |
+
+---
+
+## K · Avvio, installazione, e un'icona che fermava l'analisi
+
+| # | Modifica | Perché |
+|---|---|---|
+| K1 | **CORRETTO: «The analysis stopped: The value "✓" is not a valid emoji».** L'avviso di fine analisi passava un segno di spunta tipografico (U+2713) come icona a `st.toast`, che valida l'icona come emoji vera e alza un'eccezione. L'eccezione veniva raccolta dal `except` dell'analisi e compariva come se l'analisi fosse fallita — mentre era finita bene ed era già salvata. Ora l'avviso non ha icona, e qualunque errore nel mostrarlo viene ignorato. | Un avviso di cortesia non deve poter far fallire tre minuti di lavoro, né far credere che siano andati persi. |
+| K2 | **Niente più cartelle nascoste: `.streamlit/` è sparita.** Le stesse impostazioni (tema, limite di caricamento a 50 MB, barra strumenti ridotta) le passa `avvia.py` come opzioni della riga di comando. | Una cartella che comincia col punto è invisibile nel gestore file e sparisce copiando il progetto per trascinamento. Ora la configurazione è in un file normale, che si vede e si legge. |
+| K3 | **Opzioni, non variabili d'ambiente.** Le variabili equivalenti esistono, ma Streamlit le legge solo quando avvia il server: provate altrove non hanno effetto. | Una configurazione che funziona «solo qualche volta» è peggio di una che manca. Verificato: le opzioni vengono accettate, le variabili in un interprete normale no. |
+| K4 | **Nuovo `avvia.py`: un comando solo.** Controlla i pacchetti Python e li installa, controlla mermaid-cli e lo installa, imposta Streamlit, apre l'applicazione. | Su una macchina pulita `python avvia.py` basta. Le due cose che non possono stare nel repository se le prende da sé. |
+| K5 | **Installa alla luce del sole.** Ogni comando viene stampato prima di essere eseguito; l'installazione Python va nell'interprete corrente, quindi dentro il virtualenv se ce n'è uno attivo; `--niente-installazioni` fa girare solo i controlli. | Installare pacchetti di nascosto tocca l'ambiente di chi lancia il comando, e se quell'ambiente è condiviso il danno non è suo. |
+| K6 | **mermaid-cli si installa accanto al progetto, non globalmente.** `mermaid_render` lo cerca anche in `node_modules/.bin`. | `npm install -g` chiede i permessi di amministratore, che su una macchina aziendale spesso non ci sono. Così non servono. |
+| K7 | **Se manca il browser, `avvia.py` lo scarica** (`npx puppeteer browsers install chrome-headless-shell`) e riprova. | `mmdc` può essere installato e non disegnare: è il caso che prima passava inosservato fino a un'esportazione. |
+| K8 | **`verifica.py` non installa niente.** Resta separato per guardare com'è messa una macchina senza toccarla: un server di qualcun altro, un ambiente condiviso, un controllo prima di un'installazione. | — |
+| K9 | **CORRETTO: le etichette che uscivano dalle caselle.** Con `htmlLabels: true` Mermaid disegna il testo dei nodi dentro un `foreignObject`, cioè HTML vero dentro l'SVG, ma dimensiona il riquadro PRIMA, misurando il testo con il carattere che crede di avere. In un browser headless quel carattere spesso non c'è: si misura con uno, si disegna con un altro, e il testo esce dalla casella. Ora `htmlLabels: false`, con un carattere presente ovunque e una larghezza di ritorno a capo dichiarata. | È il difetto dei diagrammi con le etichette su due righe dentro riquadri alti una riga. Con le etichette SVG, Mermaid misura con lo stesso motore con cui disegna, e la casella viene della misura giusta. |
+| K10 | **La configurazione viaggia dentro il diagramma** (`%%{init: …}%%` in testa, aggiunta al momento del disegno). | Il file di configurazione locale vale solo per `mmdc`. Il servizio esterno riceve **solo il codice**: ecco perché quei diagrammi uscivano col tema di serie e le etichette fuori posto anche dopo aver sistemato la configurazione. Scritta dentro, vale in locale, sul servizio, e anche se qualcuno incolla il codice su mermaid.live. |
+| K11 | **Le direttive `%%{…}%%` sono protette dalla pulizia** delle etichette, e un'intestazione mancante si inserisce dopo, non prima. | Le graffe di una direttiva sono JSON: messe fra virgolette come se fossero un'etichetta rompono la configurazione. E un `flowchart TD` messo sopra la direttiva rompe il diagramma. |
+| K12 | **Bottone «Install what's missing»** nella barra laterale, sotto *Dependencies*, con lo stato del disegno locale scritto sopra. Lancia lo stesso `avvia.py --solo-preparazione` della riga di comando. | Nessuna logica di installazione duplicata dentro l'app che poi si allontana da quella vera. E chi usa l'applicazione non deve aprire un terminale. |
+| K13 | **La prova del disegno sta in un posto solo** (`mermaid_render.prova_locale()`), usata da app, avvio e verifica. | Tre posti che rispondono alla stessa domanda devono rispondere allo stesso modo. |
+| K14 | **`fonts/LICENSE.txt`** resta: IBM Plex è SIL Open Font 1.1, si ridistribuisce anche in un progetto commerciale purché la licenza viaggi con i file. | — |
+
+---
+
+## L · I limiti dichiarati nella guida, chiusi
+
+Contratto JSON: **2.1** (era 2.0 — vedi L7).
+
+| # | Modifica | Perché |
+|---|---|---|
+| L1 | **In Python le chiamate si leggono dall'albero sintattico** (`ast`, libreria standard, nessuna dipendenza in più): nodi `Call` veri, con l'elenco di cosa è definito nel file per escluderlo. Quando l'albero c'è, il pattern generico non gira affatto. | L'espressione regolare «identificatore seguito da parentesi» non distingue una chiamata da un cast, da un costruttore o da una parentesi qualsiasi: produceva righe a confidenza MEDIA che qualcuno doveva controllare a mano. L'albero sa che quello È un nodo Call: confidenza ALTA, nessuna verifica. |
+| L2 | **In SQL e PL/SQL l'albero di sqlglot CONFERMA, non sostituisce.** I nomi che riconosce come chiamate non standard promuovono i riscontri dell'espressione regolare da sospetto a certezza. | Su un package PL/SQL vero sqlglot non arriva in fondo: quello che non capisce diventa un nodo `Command` e sparisce dall'albero. Usarlo come unica fonte faceva **perdere** chiamate che l'espressione regolare vedeva benissimo — un passo indietro travestito da passo avanti. Trovato provando, non ragionando. |
+| L3 | **Due assi separati: «è una chiamata» e «il bersaglio è nel perimetro».** Confermata e dichiarata → `CALL` / HIGH. Confermata ma fuori dal codice caricato → `CALL` / MEDIUM. Né l'una né l'altra → `PROBABLE_CALL` / LOW. | Prima la conferma dell'albero scavalcava anche il filtro del rumore, e `System.out.println` rientrava come chiamata certa. Sono due domande diverse e vanno risposte separatamente. |
+| L4 | **I lotti seguono il grafo delle dipendenze**, non l'ordine di dimensione. I file che si chiamano fra loro vanno nello stesso lotto quando ci stanno; un gruppo più grande di un lotto viene spezzato, ma mai un file. | Prima due file legati finivano separati per puro ordine alfabetico, e il loro collegamento non lo vedeva nessuno: al consolidamento arriva solo l'inventario, da cui si può indovinare ma non vedere. Il buco non sparisce, si stringe molto. |
+| L5 | **Nuovi indicatori: quanto dei FATTI DEL PARSER è stato descritto.** Quanti dei componenti dichiarati compaiono in almeno una riga del modello, quante delle tabelle trovate sono descritte. | Quanta parte di un'applicazione sia stata capita non lo può dire nessuno — servirebbe conoscere in anticipo la risposta. Ma i fatti del parser sono verità nota, e chiedersi quanti ne sono stati descritti è una domanda vera con una risposta vera. |
+| L6 | **I file muti vengono segnalati**: quelli che contengono IF, CASE o WHEN e non hanno prodotto nemmeno una regola di business. | È il segnale più forte che l'applicazione sa dare su sé stessa. Un file pieno di condizioni da cui non esce nessuna regola è quasi sempre un file che il modello ha saltato, e vale un secondo passaggio su quello solo. |
+| L7 | **Contratto 2.1: `business_processes.steps`**, i passi in ordine di esecuzione. Il diagramma costruito dai dati li incatena nell'ordine dato. | L'ordine di esecuzione è la sola cosa che il modello sa e che dalle tabelle non si ricava: era il motivo per cui il suo disegno restava migliore del nostro. Chiedendolo come dato diventa una riga che l'esperto può correggere, invece di stare dentro un disegno che nessuno può validare — e il disegno si rifà dopo le correzioni. |
+| L8 | **Il Word usa Arial e Courier New**, non più IBM Plex. Il PDF resta su Plex. | Word non incorpora i caratteri se non in un formato offuscato che alcune installazioni aziendali rifiutano, e che gonfia ogni documento di 700 KB. Il risultato sarebbe un documento che si apre bene da noi e con un carattere di ripiego dal cliente: **imprevedibile**, che per un documento di consegna è la cosa peggiore. Due caratteri presenti ovunque danno un documento identico dappertutto. Nel PDF il problema non c'è: i font sono dentro il file. |
+| L9 | **Una rotella che gira mentre il modello lavora.** `st.status` con l'etichetta che cambia a ogni lotto, i secondi trascorsi, i file in lavorazione e le ultime righe del diario; alla fine diventa un riepilogo richiuso. Anche la prova di connessione ha la sua. | Un'analisi vera dura minuti. Senza qualcosa che si muove la pagina sembra bloccata, la gente ricarica, e il lavoro fatto fin lì se ne va. |
+| L10 | **Quindici casi in più nel collaudo**, compresi il file Python illeggibile che non deve far saltare nulla e la chiamata che l'albero SQL non vede e che non deve andare persa. | — |
+
+### Cosa resta aperto
+
+- **Java, COBOL e RPG restano sull'euristica.** Lì un albero sintattico vorrebbe
+  un parser per linguaggio, che è un progetto a sé. Le righe restano marcate e
+  contate per quello che sono.
+- **Il consolidamento vede l'inventario, non il codice.** Ora però i lotti sono
+  formati meglio, quindi ha molto meno da recuperare.
+
+---
+
+## M · Controllo generale (12 settembre 2026)
+
+Lo zip è stato spacchettato in una cartella vuota e tutto è stato fatto girare
+da lì, come farebbe chi lo riceve: collaudo, verifica, avvio, analisi statica,
+pagina intera contro Streamlit reale, PDF e Word. Poi analisi statica del codice
+con pyflakes e confronto fra documenti e file reali.
+
+| # | Trovato | Sistemato |
+|---|---|---|
+| M1 | Le etichette fisse dei diagrammi costruiti dai dati erano in italiano («Questa applicazione», «e altri N non mostrati») dentro documenti in inglese. | Tradotte. I commenti nel codice restano in italiano. |
+| M2 | La tabella dei file in `GUIDA.md` e in `README.md` non elencava `ui.py`, `fonts/`, `avvia.py` e `verifica.py`. | Complete, e coerenti fra loro. |
+| M3 | L'intestazione di questo file diceva ancora contratto 2.0 e «quattro blocchi». | 2.1, dodici blocchi. |
+| M4 | Una variabile e tre import inutilizzati (segnalati da pyflakes). | Rimossi; pyflakes ora tace. |
+| M5 | `markdown` è usato solo da `guida_pdf.py` e non è in `requirements.txt`. | Scelta confermata: è uno script di servizio, e il README dice cosa installare per usarlo. |
+
+Nessun residuo nel pacchetto (`__pycache__`, `node_modules`, cache della
+catena), nessun riferimento a cose rimosse, nessun testo in italiano
+nell'interfaccia, dipendenze dichiarate uguali a quelle usate.
+
+---
+
+## N · Secondo controllo generale: quello che il primo non copriva
+
+Non una ripetizione: tre percorsi che nessun collaudo aveva mai fatto girare
+per intero.
+
+| # | Cosa | Esito |
+|---|---|---|
+| N1 | **L'orchestrazione completa** — lotti → modello → JSON → normalizzazione → unione → consolidamento → statica → diagrammi — con un provider finto, a uno e a tre lotti. | Corretta: una prova di contatto, tre analisi, un consolidamento; id unici fra i lotti; il collegamento fra lotti accettato; le sintesi per lotto sostituite da quella d'insieme. |
+| N2 | **L'installazione vera dei pacchetti Python** con `avvia.py` in un ambiente virtuale vuoto. | Corretta: `pip` li ha installati, e il collaudo è passato nell'ambiente appena riempito. |
+| N3 | **L'installazione locale di mermaid-cli** con `npm`, accanto al progetto. | Corretta: `node_modules/.bin/mmdc` compare e `mermaid_render` lo trova. |
+
+E due difetti veri, trovati per strada.
+
+| # | Trovato | Sistemato |
+|---|---|---|
+| N4 | **Il lavoro dell'esperto viveva solo nella sessione del browser.** Chiusa la scheda, spunte e correzioni erano perse. C'era il download del JSON ma **nessun modo di ricaricarlo** — e la guida diceva che «i JSON della 2.0 si aprono», il che era falso: non esisteva niente che li aprisse. | Nuovo pannello **«Or resume a saved analysis»** sotto il passo 2. Il JSON esportato ora porta con sé anche i metadati del parser e chi ha risposto; ricaricandolo si riprende da dove si era, spunte comprese. I file della versione 2.0 (senza `steps`, con le domande a stringhe) passano dal contratto e salgono alla 2.1. Un file caricato viene letto **una volta sola**: il caricatore resta pieno a ogni giro della pagina, e rileggerlo ogni volta avrebbe cancellato le spunte messe dopo. |
+| N5 | **Il comando che scaricava il browser per mermaid-cli era sbagliato due volte.** La sintassi era rifiutata (stampava l'aiuto), e comunque prendeva un puppeteer diverso da quello di mermaid-cli, quindi scaricava Chrome 131 dove serve la 152: anche riuscendo, `mmdc` non avrebbe trovato il browser. | Ora si usa l'installatore di puppeteer **stesso**, quello dentro `node_modules`: è l'unico che conosce la versione esatta che pretende. Provato: ora fallisce solo per la rete (bloccata nell'ambiente di sviluppo), non per il comando. Il messaggio finale spiega le due vie d'uscita: `PUPPETEER_EXECUTABLE_PATH` verso un Chrome già installato, o `MERMAID_LOCAL_ONLY=1`. |
+| N6 | Con un JSON ricaricato senza metadati, due cifre in testa alla pagina esplodevano (`metadata['file_count']`). | `.get` con un trattino al posto del numero. La pagina intera gira anche da un file vecchio senza metadati. |
+| N7 | **Sei casi in più nel collaudo** sul ricaricamento. | 108 in tutto. |
+
+---
+
+## O · I formati accettati (segnalazione: «non riconosce i .vb»)
+
+Il caricatore aveva un elenco fisso di estensioni, e `.vb` non c'era. La
+correzione giusta non era aggiungerlo all'elenco: era smettere di rifiutare
+file. Un estrattore per il legacy non può sapere in anticipo cosa gli arriverà.
+
+| # | Modifica | Perché |
+|---|---|---|
+| O1 | **Il caricatore accetta qualunque file.** L'elenco delle estensioni serve ora solo a dire al modello che linguaggio sta leggendo; un'estensione ignota entra lo stesso, marcata «Unknown (.xyz)». | Il modello riconosce il linguaggio dal contenuto: è la cosa che gli riesce meglio. Respingere un file per il nome è tenere fuori un'informazione per un dettaglio. |
+| O2 | **I binari vengono respinti con un motivo e un rimedio** (un byte nullo nei primi 8 KB). | Un `.dll` o un `.fmb` decodificato a forza è spazzatura mandata a pagamento al modello. Il messaggio dice di esportare il sorgente come testo. |
+| O3 | **Ottanta estensioni riconosciute**, non venti: tutte le vite di Visual Basic (`.vb`, `.bas`, `.frm`, `.cls`, `.ctl`, `.vbs`, `.asp`), i dialetti PL/SQL (`.prc`, `.fnc`, `.trg`, `.pck`, `.spc`, `.bdy`), il mainframe (`.cpy`, `.jcl`, `.pli`, `.asm`), IBM i per intero (`.sqlrpgle`, `.clle`, `.dds`, `.pf`, `.lf`, `.dspf`), Delphi, PHP, Perl, ABAP, Progress, PowerBuilder, gli script di shell. | Sono i linguaggi in cui il legacy è scritto davvero. |
+| O4 | **Pattern statici per VB**: `Sub`, `Function`, `Property`, `Class`/`Module`, `Imports`; e tre rischi tipici — `On Error Resume Next` (gli errori dopo quella riga spariscono), `GoTo`, `CreateObject` (dipendenza COM risolta a runtime). | Il .vb entrava, ma l'analisi statica lo guardava con gli occhi del PL/SQL. |
+| O5 | **Pattern per JCL**: gli step come componenti, `EXEC PGM=` come dipendenza, `DSN=` come oggetto dato. | Un JCL è la mappa di un batch: chi esegue cosa e su quali dataset. |
+| O6 | **CORRETTO: ogni pattern gira solo sul suo linguaggio.** Prima i pattern di tutti i linguaggi giravano su tutti i file. | È il difetto che il .vb ha reso visibile: la stessa `ApplyDiscount` usciva quattro volte con quattro etichette (`FUNCTION`, `JAVA_METHOD`, `JAVASCRIPT_FUNCTION`, `VB_FUNCTION`), e `End Function` seguito da una riga che comincia con `Public` fabbricava una funzione fantasma di nome Public. Sui file di linguaggio ignoto si provano tutti, che è meglio di niente. |
+| O7 | **`[ \t]+` invece di `\s+`** dopo `PROCEDURE`, `FUNCTION`, `PACKAGE`. | `\s+` attraversa gli a capo: era la meccanica del fantasma. |
+| O8 | **I pattern VB distinguono le maiuscole.** | `Sub`, `Function` e `Property` in VB sono sempre così; senza distinzione, `function` in un commento diventava un componente. |
+| O9 | **Otto casi in più nel collaudo**: il .vb accettato, l'estensione ignota, il binario respinto, VB e JCL riconosciuti, il fantasma che non nasce più, i rischi VB che non girano sui file SQL. | 116 in tutto. |
+
+---
+
+## P · La velocità
+
+Il tempo di un'analisi non lo fa la lettura del codice: lo fa la **scrittura
+della risposta**. Un modello genera qualche decina di token al secondo, e una
+risposta piena da sedicimila token sono minuti. Le tre leve stanno lì.
+
+| # | Modifica | Perché |
+|---|---|---|
+| P1 | **Profondità «Quick»** accanto a «Full», al passo 3. Chiede le otto sezioni che ripagano l'esecuzione — processi, regole, componenti, dipendenze, interfacce, dati, rischi, domande — e mette un tetto alla risposta di 7.000 token invece di 16.000. Analisi d'impatto, mappa applicativa, assunzioni e diagrammi del modello restano vuoti, dichiarati come saltati (non come mancanti); i diagrammi si costruiscono comunque dalle tabelle. | È la leva più grossa che esiste: meno token da scrivere, meno minuti. Grosso modo metà tempo. Il prompt, lo schema nativo e la normalizzazione seguono tutti la stessa scelta, quindi non possono divergere. |
+| P2 | **Lotti in parallelo**: da 1 a 4 insieme, scelto dall'utente (predefinito 2). La prova di contatto si fa una volta sola prima di aprire i thread; l'avanzamento conta i lotti **finiti**, aggiornato solo dal thread principale perché Streamlit lo pretende. | La chiamata al modello è attesa di rete, e tenerne una sola in volo alla volta è tempo buttato. Il tetto lo sceglie chi paga, perché è la sua quota che si consuma più in fretta: su una chiave gratuita conviene restare a 1 o 2. Collaudato con un provider finto: tre lotti da 0,25 s finiscono in 0,26 s. |
+| P3 | **Cache dei lotti su disco**, in `cache/` (visibile, non versionata). Un lotto è identificato dai suoi file, dal contratto e da come è stato chiesto; stessa chiave, stessa risposta, letta dal disco invece di ripagata. Sopravvive alla chiusura della sessione. | Rilanciare dopo aver aggiunto un file paga solo il lotto nuovo; riaprire il giorno dopo non paga niente; due colleghi sulla stessa macchina non pagano due volte. «Analyse again from scratch» la ignora. Quick e Full sono chiavi diverse. |
+| P4 | **La memoria della catena si è spostata in `cache/`** (`catena_modelli.json`): era un file nascosto accanto al codice. | Niente file nascosti, e una sola cartella rigenerabile da ignorare in git. |
+| P5 | **In Overview** si legge la profondità usata e quanti lotti vengono dalla cache. | Chi legge deve sapere se ha davanti un'analisi rapida o completa. |
+| P7 | **Tolti dal pacchetto `package.json` e `package-lock.json`.** Li aveva fabbricati `npm` durante il collaudo dell'installazione ed erano finiti nello zip senza che nessuno li volesse. `avvia.py` ora installa con `--no-save`, e i due nomi sono in `.gitignore`. | Un file nel repository deve esserci perché qualcuno l'ha deciso. |
+| P6 | **Otto casi in più nel collaudo**, sull'orchestrazione intera con un provider finto: il parallelismo misurato, la prova unica, la cache che riusa, il file aggiunto che paga solo il suo lotto, il «da capo» che ripaga tutto, Quick che non segnala come mancante ciò che ha saltato. | 124 in tutto. |
+
+Cosa NON accelera: la prova di contatto (già in memoria per dieci minuti) e
+l'analisi statica (frazioni di secondo). E cosa costa: la cache non sa che il
+modello è migliorato — se cambia il modello o il ragionamento la chiave cambia
+da sola, ma un modello aggiornato sotto lo stesso nome dà la risposta vecchia
+finché non si spunta «from scratch».
+
+---
+
+## Q · Le risposte a metà: si continuano, non si rifanno
+
+Prima, una risposta tagliata dal tetto di token veniva ritentata da capo con lo
+stesso prompt (che non la accorcia), poi consegnata a metà e riparata buttando
+l'ultima riga. E se il modello cadeva, si scendeva al successivo, che avrebbe
+scritto altrettanto. Ora una risposta a metà è una risposta da **continuare**,
+con lo **stesso modello**, dal **punto esatto** in cui si è fermata.
+
+| # | Modifica | Perché |
+|---|---|---|
+| Q1 | **Il tag di chiusura.** Il contratto chiede che l'ultima proprietà dell'oggetto sia `"complete": true`; nello schema di Gemini è obbligatoria e l'ordine è imposto. La risposta è completa se il JSON si legge per intero **e** c'è il tag — oppure, se il tag manca, se il provider non l'ha segnalata come tagliata. | Il tag da solo non basta (un modello può dimenticarlo); il segnale del provider da solo nemmeno (un JSON può chiudersi giusto sul limite). Insieme sono affidabili. E il prompt dice: se finisce lo spazio, non accorciare le righe per farcele stare — fermati, ti verrà chiesto di continuare. |
+| Q2 | **La catena non cambia più modello su una risposta tagliata.** La consegna subito, marcata, e chi chiama chiede il seguito. | Cambiare modello butta via il pezzo scritto per rifarlo con un altro che scriverà altrettanto. |
+| Q3 | **`continua()` nella catena**: stesso modello, niente scoperta, niente prova, niente scalata. Se è occupato si riprova con lui; se è definitivamente giù si fallisce, non si passa a un altro. | Solo chi ha scritto la prima parte sa proseguirla con la stessa voce. |
+| Q4 | **Il seguito si chiede nel dialetto di ciascun provider.** Gemini: il pezzo scritto torna come turno del modello, poi la richiesta di proseguire, in modo testo (il seguito da solo non è un JSON valido e uno schema lo rifiuterebbe). Azure/OpenAI: idem, senza `response_format`. **Anthropic: il pezzo scritto diventa il prefill** e il modello continua la stessa frase senza nemmeno sapere di essersi fermato — il modo migliore che esista; con il ragionamento esteso, dove il prefill non è ammesso, si torna alla forma a turni. | — |
+| Q5 | **Il riattacco.** Il seguito viene ripulito dai recinti markdown e si cerca la sovrapposizione più lunga fra la coda della prima parte e la testa della seconda: i modelli, quando riprendono, ripetono spesso gli ultimi caratteri. | «Discount ov» + «er 100» → «Discount over 100», anche se il modello ripete «Discount ov». |
+| Q6 | **Due continuazioni automatiche** prima di fermarsi. | Se il modello si è fermato a metà, chiedergli di proseguire non è una decisione che valga un clic. Se due giri non bastano, è giusto che sia una persona a decidere se spendere ancora. |
+| Q7 | **Il bottone «Continue with the same model»** compare in cima alla pagina quando una risposta resta incompleta, con scritto quali lotti e quali file. Le righe già scritte si vedono intanto, riparate, con l'avviso che possono cambiare. | Chi guarda sa cosa manca e cosa può fare. |
+| Q8 | **Finché la risposta non è completa, «Analyse the application» è spento**, con scritto perché. Si sblocca a risposta completa (o svuotando i risultati). | È la regola chiesta: prima si finisce, poi eventualmente si rifà. |
+| Q9 | **Il consolidamento aspetta** che tutti i lotti siano completi; **la cache** salva solo i lotti completi. | Un inventario a metà produce collegamenti a metà; una risposta a metà in cache sarebbe una risposta a metà per sempre. |
+| Q10 | **Lo stato dei lotti** (prompt, testo scritto finora, modello, chiave di cache) vive nella sessione, **non** nel risultato esportato. | Il prompt contiene il sorgente del cliente: non deve finire in un JSON che gira per e-mail. Per questo un'analisi incompleta ricaricata da file non si può continuare — lo dice, e sblocca l'avvio. |
+| Q11 | **Otto casi in più nel collaudo**: la continuazione automatica fino al tag, il riattacco a metà parola, il secondo modello mai chiamato, la risposta che resta a metà dopo due giri e si ferma, il bottone che la porta in fondo, il ricomponimento che sblocca l'avvio, il modello occupato riprovato e non sostituito. | 132 in tutto. Corretto anche un collaudo che leggeva la cache vera invece di quella di prova, e passava solo la prima volta. |
+
+---
+
+## R · La guida
+
+| # | Modifica | Perché |
+|---|---|---|
+| R1 | **Guida in inglese**: `GUIDE.md` e `GUIDE.pdf`, traduzione integrale della guida italiana, stessa struttura. `guida_pdf.py` senza argomenti le rigenera tutte e due. | Per i colleghi e i clienti che non leggono l'italiano. |
+| R2 | **Aggiornata su velocità e ripresa**: le quattro manopole (profondità, ragionamento, lotti insieme, memoria del lavoro fatto), la continuazione dal punto in cui il modello si è fermato, il ricaricamento di un'analisi salvata. Nella parte tecnica: profondità, lotti in parallelo, cache, completezza e continuazione, stato di sessione. | Erano cambiamenti recenti e la guida era rimasta indietro. |
+| R3 | **Tolte le sezioni «Cosa non è mai stato provato davvero» e «Da dove cominciare a provare».** Nella guida resta un solo elenco di limiti, di progetto. | Richiesta esplicita: il dettaglio di cosa è stato verificato e come sta in questo file, non nella guida che si consegna. |
+| R4 | Sistemata una sezione della parte 1 in cui il paragrafo sulla continuazione era finito in mezzo a quello sul ragionamento. | — |
+
+---
+
+## S · La scelta del modello
+
+| # | Modifica | Perché |
+|---|---|---|
+| S1 | **«Check the connection» sta subito dopo la chiave** (e l'endpoint, su Azure), prima della scelta del modello. Verifica la chiave e la catena così come la trova, e rifà la scoperta: aggiorna anche il menù qui sotto. | Si controlla la chiave, non una scelta. |
+| S2 | **«Preferred model» è un menù a tendina riempito dai modelli trovati sulla chiave**, dal più nuovo in giù. La prima voce è *Automatic (the chain decides)*; le altre sono i modelli che la scoperta ha trovato, nell'ordine della preferenza (qualità o velocità). La scoperta si fa una volta per chiave e la catena la tiene in memoria sei ore. | Chi sceglie sceglie fra cose che esistono. Prima c'era un campo di testo libero in cui si poteva scrivere qualunque nome. |
+| S3 | **CORRETTO: su Gemini e Claude il campo «Preferred model» non faceva niente.** Il valore veniva passato alla catena come `deployment`, che conta solo per Azure. Si poteva scrivere qualunque cosa e la catena andava per conto suo — e nessuno se ne accorgeva, perché la catena andava comunque. | Ora il modello scelto va in testa alla catena per qualunque provider; se non risponde si ricade sugli altri, il migliore per primo; la scelta della persona vince sulla memoria del modello «buono». |
+| S4 | **Su Azure il menù elenca i deployment** trovati sull'endpoint. Se l'elenco non si può leggere (la chiave può non avere quel permesso), resta un campo di testo per scrivere il nome: è l'unico caso. | Il nome chiamabile su Azure è il deployment, e solo chi ha creato la risorsa lo conosce. |
+| S5 | Le variabili d'ambiente `GEMINI_MODEL`, `ANTHROPIC_MODEL`, `AZURE_OPENAI_DEPLOYMENT` preselezionano la voce del menù, se c'è. | — |
+| S6 | **Quattro casi in più nel collaudo**: il modello scelto provato per primo, la ricaduta sul migliore se è giù, la scelta che vince sulla memoria, un nome non in elenco comunque provato. | 136 in tutto. |
+
+---
+
+## T · Le vie d'uscita da una risposta a metà
+
+Due domande dal campo: c'è un modo per ricominciare da capo se «Continue» non
+funziona? E se il modello che scriveva ha finito la quota, si resta bloccati?
+Risposta di prima: la via d'uscita c'era ma si chiamava «Clear results» in un
+altro posto; e sì, si restava bloccati — la regola «mai cambiare modello a
+metà» era diventata «restare fermi». Peggio: se la quota finiva durante le
+continuazioni automatiche, l'errore faceva cadere **l'intera esecuzione**,
+lotti buoni compresi.
+
+| # | Modifica | Perché |
+|---|---|---|
+| T1 | **CORRETTO: una continuazione automatica che fallisce non fa più cadere l'esecuzione.** Il lotto viene consegnato a metà, con la causa (`quota`, `busy`…), e gli altri lotti restano buoni. | Tre lotti riusciti non devono andare persi perché il quarto si è fermato. |
+| T2 | **Tre vie d'uscita nel pannello**, una accanto all'altra: *Continue with the same model*, *Keep what was written*, *Discard and start over*. | Chi guarda una risposta a metà deve poter scegliere, non solo aspettare. |
+| T3 | **«Continue with the next model»** compare quando il modello che scriveva ha smesso di rispondere: consegna il seguito al modello successivo della catena (`CatenaModelli.successivo`). Le righe già scritte restano; il risultato e il documento dicono quale lotto è stato finito da un modello diverso e da quale. | Il passaggio non avviene mai da solo: è una decisione della persona, e resta scritta. La regola «non cambiare modello a metà» era giusta come regola automatica e sbagliata come muro. |
+| T4 | **«Keep what was written»** accetta i lotti a metà così come sono — le righe già riparate restano — e lo dichiara negli avvisi; il consolidamento parte, l'avvio si sblocca. | A volte quello che c'è basta, e pagare ancora non ha senso. Non finisce in cache: una risposta a metà in cache sarebbe a metà per sempre. |
+| T5 | **«Discard and start over»** butta l'esecuzione e riaccende «Analyse the application». | La via d'uscita chiamata col suo nome, dove serve. |
+| T6 | Quando «Continue with the same model» fallisce, il pannello mostra la causa e apre la via del modello successivo, senza far cadere niente. | — |
+| T7 | **Sei casi in più nel collaudo**: la quota che finisce in continuazione automatica senza far cadere l'esecuzione, il modello dopo interpellato solo su decisione, la risposta chiusa dal secondo modello, l'avviso nel risultato. | 142 in tutto. |
 
 ---
 

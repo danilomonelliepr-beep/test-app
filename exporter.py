@@ -84,12 +84,23 @@ PROVENIENZA = {"STATIC_ANALYSIS": "parser", "LLM_ANALYSIS": "model", "MIXED": "b
 CARTELLA_FONT = Path(__file__).parent / "fonts"
 FONT = {"corpo": "Helvetica", "forte": "Helvetica-Bold",
         "mono": "Courier", "mono_forte": "Courier-Bold"}
-NOME_WORD = "Calibri"
+
+# ── Il Word usa caratteri che ci sono su tutte le macchine ────────────────
+# Nel PDF i caratteri sono DENTRO il file, quindi IBM Plex si vede ovunque.
+# Word no: incorpora i font solo con un formato offuscato che alcune
+# installazioni aziendali rifiutano, e che gonfia ogni documento di 700 KB.
+# Il risultato sarebbe un documento che si apre bene da noi e con un carattere
+# di ripiego dal cliente — cioè imprevedibile, che è la cosa peggiore per un
+# documento di consegna. Meglio due caratteri che esistono su Windows, macOS e
+# Linux: il documento è identico dappertutto, e si rinuncia a una somiglianza
+# che comunque non era garantita.
+NOME_WORD = "Arial"
+NOME_WORD_MONO = "Courier New"
 _registrati = False
 
 
 def _registra_font() -> bool:
-    global _registrati, NOME_WORD
+    global _registrati
     if _registrati:
         return FONT["corpo"] != "Helvetica"
     _registrati = True
@@ -105,7 +116,6 @@ def _registra_font() -> bool:
             pdfmetrics.registerFont(TTFont(nome, str(percorso)))
         FONT.update({"corpo": "PlexSans", "forte": "PlexSans-SemiBold",
                      "mono": "PlexMono", "mono_forte": "PlexMono-Medium"})
-        NOME_WORD = "IBM Plex Sans"
         return True
     except Exception:
         return False
@@ -136,7 +146,7 @@ ETICHETTE = {
     "change_scenario": "Change", "involved_components": "Components",
     "affected_components": "Components", "source": "Found by", "confidence": "Conf.",
 }
-LARGHE = {"description", "condition", "action", "impact", "recommendation",
+LARGHE = {"steps", "description", "condition", "action", "impact", "recommendation",
           "impact_description", "business_impact", "question", "why_it_matters",
           "assumption", "purpose", "data_description", "transformation", "mitigation",
           "basis", "risk_if_wrong", "change_scenario", "outcome", "trigger"}
@@ -592,7 +602,7 @@ def _testo_cella(cella, testo: str, grassetto=False, mono=False, bianco=False,
     par.paragraph_format.space_after = Pt(0)
     run = par.add_run(testo)
     run.font.size = Pt(misura)
-    run.font.name = "IBM Plex Mono" if mono else NOME_WORD
+    run.font.name = NOME_WORD_MONO if mono else NOME_WORD
     run.font.bold = grassetto
     if bianco:
         run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
@@ -726,7 +736,7 @@ def generate_docx_report(analysis_result: Dict[str, Any], metadata: Dict[str, An
                 doc.add_paragraph("The picture could not be produced. Diagram source:")
                 p = doc.add_paragraph(codice)
                 for run in p.runs:
-                    run.font.name = "IBM Plex Mono"
+                    run.font.name = NOME_WORD_MONO
                     run.font.size = Pt(8)
 
     buffer = io.BytesIO()

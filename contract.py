@@ -36,7 +36,7 @@ import re
 import secrets
 from typing import Any, Dict, List, Tuple
 
-VERSIONE_CONTRATTO = "2.0"
+VERSIONE_CONTRATTO = "2.1"
 
 # =============================================================================
 # I VALORI AMMESSI. Testo libero in questi campi significa: impossibile
@@ -71,6 +71,7 @@ CAMPI: Dict[str, Dict[str, Any]] = {
             "process_name": ("Nome del processo in linguaggio di business", None),
             "description": ("Cosa fa, in 1-3 frasi", None),
             "trigger": ("Cosa lo fa partire (job schedulato, chiamata, evento)", None),
+            "steps": ("I passi del processo IN ORDINE DI ESECUZIONE, uno per elemento", None),
             "outcome": ("Risultato osservabile a fine processo", None),
             "involved_components": ("Componenti coinvolti, lista di nomi", None),
             "source_file": ("File dove è più evidente", None),
@@ -261,7 +262,32 @@ CAMPI_MERMAID = ["mermaid_process_flow", "mermaid_application_map",
 # campi che il modello può legittimamente riempire con una lista di nomi:
 # a valle diventano testo, perché una lista dentro una cella di tabella si
 # stampa come «['a', 'b']» e nessuno la legge volentieri.
-CAMPI_LISTA = {"involved_components", "affected_components", "related_ids"}
+# `steps` è una lista ordinata, e l'ordine È l'informazione: è la sola cosa che
+# il modello sa e che dalle tabelle non si ricava. Chiederla come dato invece
+# che lasciarla dentro un disegno la rende una riga che l'esperto può
+# correggere — e un disegno che si può ricostruire dopo le correzioni.
+CAMPI_LISTA = {"involved_components", "affected_components", "related_ids", "steps"}
+
+# ═══ LE PROFONDITÀ ══════════════════════════════════════════════════════════
+# Il tempo di un'analisi lo fa la RISPOSTA, non il prompt: un modello scrive
+# qualche decina di token al secondo, e una risposta da sedicimila token sono
+# minuti. Chiedere meno sezioni è la leva più grossa che c'è sulla velocità —
+# più della scelta del modello. «Quick» chiede le sezioni che ripagano
+# l'esecuzione e lascia vuote le altre, dichiarandolo; i diagrammi si
+# costruiscono comunque dai dati, quindi non si perdono.
+PROFONDITA = {
+    "quick": {
+        "sezioni": ["business_processes", "business_rules", "components", "dependencies",
+                    "interfaces", "data_objects", "technical_risks", "validation_questions"],
+        "mermaid": [],
+        "max_token": 7000,
+    },
+    "full": {
+        "sezioni": list(CAMPI.keys()),
+        "mermaid": list(CAMPI_MERMAID),
+        "max_token": 16000,
+    },
+}
 
 RISULTATO_VUOTO: Dict[str, Any] = {c: "" for c in CAMPI_TESTO}
 RISULTATO_VUOTO.update({c: "" for c in CAMPI_MERMAID})
@@ -288,9 +314,11 @@ def _riga_esempio(nome: str) -> str:
     return "{ " + ", ".join(parti) + " }"
 
 
-def descrizione_contratto() -> str:
+def descrizione_contratto(sezioni: List[str] = None) -> str:
     righe = []
     for nome, spec in CAMPI.items():
+        if sezioni is not None and nome not in sezioni:
+            continue
         righe.append(f'  "{nome}": [   // {spec["titolo"]}')
         righe.append(f"      {_riga_esempio(nome)}")
         righe.append("  ],")
@@ -298,7 +326,8 @@ def descrizione_contratto() -> str:
 
 
 def prompt_analisi(sources: List[Dict[str, Any]], metadata: Dict[str, Any],
-                   lotto: Tuple[int, int] = (1, 1), note: str = "") -> str:
+                   lotto: Tuple[int, int] = (1, 1), note: str = "",
+                   profondita: str = "full") -> str:
     """Il prompt dell'analisi. `lotto` = (numero, totale) quando il codice è
     troppo per una chiamata sola e si va a lotti."""
     # RECINTO IRRIPETIBILE. Il sorgente da analizzare può contenere qualunque
@@ -315,6 +344,23 @@ def prompt_analisi(sources: List[Dict[str, Any]], metadata: Dict[str, Any],
         )
     sorgente = "\n\n".join(pezzi)
     metadati = json.dumps(metadata, indent=1, ensure_ascii=False)
+    prof = PROFONDITA.get(profondita, PROFONDITA["full"])
+    righe_mermaid = "".join(
+        f'  "{m}": ["<one Mermaid line per array item>"],\n' for m in prof["mermaid"])
+    regole_mermaid = ""
+    if prof["mermaid"]:
+        regole_mermaid = """
+MERMAID RULES (the diagram fields)
+· Give each diagram as an ARRAY OF LINES, first line being the header, e.g.
+  ["flowchart TD", "  ORDER_IN[\\"Order intake\\"] --> VALIDATE[\\"Validation\\"]"].
+  Never a single string with \\n inside it.
+· Node ids: letters, digits and underscore only. Labels: always inside double
+  quotes, never containing ( ) [ ] { } " or ;.
+· Keep each diagram under 40 lines. If reality is bigger, group and say so in a
+  node label — a diagram nobody can read documents nothing.
+· Only use nodes that correspond to real components, files, tables or systems
+  you listed above.
+"""
     intestazione_lotto = ""
     if lotto[1] > 1:
         intestazione_lotto = (
@@ -356,26 +402,21 @@ determine. Enumerated fields accept ONLY the listed values, uppercase.
 {{
   "executive_summary": "<8-15 lines: what this application does, how it is built, what state it is in, what the main risks are>",
   "application_purpose": "<2-4 lines: the business purpose, in business language>",
-{descrizione_contratto()}
-  "mermaid_process_flow": ["<one Mermaid line per array item>"],
-  "mermaid_application_map": ["<one Mermaid line per array item>"],
-  "mermaid_data_flow": ["<one Mermaid line per array item>"],
-  "mermaid_call_graph": ["<one Mermaid line per array item>"],
-  "technical_notes": "<anything a migration team must know that did not fit above>"
+{descrizione_contratto(prof["sezioni"])}
+{righe_mermaid}  "technical_notes": "<anything a migration team must know that did not fit above>",
+  "complete": true
 }}
 
-MERMAID RULES (the four diagram fields)
-· Give each diagram as an ARRAY OF LINES, first line being the header, e.g.
-  ["flowchart TD", "  ORDER_IN[\\"Order intake\\"] --> VALIDATE[\\"Validation\\"]"].
-  Never a single string with \\n inside it.
-· Node ids: letters, digits and underscore only. Labels: always inside double
-  quotes, never containing ( ) [ ] {{ }} " or ;.
-· Keep each diagram under 40 lines. If reality is bigger, group and say so in a
-  node label — a diagram nobody can read documents nothing.
-· Only use nodes that correspond to real components, files, tables or systems
-  you listed above.
-
+THE LAST PROPERTY. `"complete": true` must be the very last property of the
+object. It is how the reader knows the answer was not cut off. If you run out
+of room, do NOT shorten or drop rows to fit: just stop, and you will be asked
+to continue exactly from where you stopped.
+{regole_mermaid}
 QUALITY BAR
+· business_processes.steps: the order matters. Write the steps as they happen
+  at run time, one per array item, short imperative phrases ("read the order",
+  "apply the discount"). This is the one thing only you can see: the tables
+  hold what exists, not the sequence in which it runs.
 · business_rules is the most valuable section: aim for every IF/CASE/validation
   that encodes a business decision, not the technical ones.
 · validation_questions: ask what a human must confirm because the code cannot
@@ -394,7 +435,8 @@ SISTEMA = ("You are a precise reverse-engineering assistant. You return one JSON
 # Quando il provider sa imporre lo schema, imporlo: è l'unico modo per non
 # dipendere dalla buona volontà del modello sui nomi dei campi.
 # =============================================================================
-def schema_gemini() -> Dict[str, Any]:
+def schema_gemini(profondita: str = "full") -> Dict[str, Any]:
+    prof = PROFONDITA.get(profondita, PROFONDITA["full"])
     def stringa(enum=None):
         s: Dict[str, Any] = {"type": "STRING"}
         if enum:
@@ -407,6 +449,8 @@ def schema_gemini() -> Dict[str, Any]:
         "technical_notes": stringa(),
     }
     for nome, spec in CAMPI.items():
+        if nome not in prof["sezioni"]:
+            continue
         campi = {}
         for campo, (_d, enum) in spec["campi"].items():
             if campo in CAMPI_LISTA:
@@ -418,15 +462,19 @@ def schema_gemini() -> Dict[str, Any]:
             "items": {"type": "OBJECT", "properties": campi,
                       "required": list(spec["campi"].keys())},
         }
-    for m in CAMPI_MERMAID:
+    for m in prof["mermaid"]:
         prop[m] = {"type": "ARRAY", "items": {"type": "STRING"}}
-    # I quattro diagrammi vanno fra gli OBBLIGATORI. Erano rimasti fuori, e
+    # I diagrammi richiesti vanno fra gli OBBLIGATORI. Erano rimasti fuori, e
     # ometterli era quindi formalmente legittimo: il modello che si stancava
     # dopo dodici sezioni non stava violando niente. Ora deve almeno dichiarare
     # una lista vuota, e la lista vuota è un fatto che l'app sa gestire.
+    # `complete` è l'ultima proprietà, e l'ordine si impone: è il segnale che
+    # la risposta non è stata tagliata, e vale solo se sta in fondo.
+    prop["complete"] = {"type": "BOOLEAN"}
     return {"type": "OBJECT", "properties": prop,
+            "propertyOrdering": list(prop.keys()),
             "required": (["executive_summary", "application_purpose"]
-                         + list(CAMPI.keys()) + list(CAMPI_MERMAID))}
+                         + list(prof["sezioni"]) + list(prof["mermaid"]) + ["complete"])}
 
 
 # =============================================================================
@@ -521,6 +569,45 @@ def ripara_troncato(testo: str) -> Any:
 
 
 # =============================================================================
+# RISPOSTA COMPLETA O TAGLIATA? E COME SI RIATTACCA UN PEZZO.
+# =============================================================================
+def risposta_completa(testo: str, troncata: bool = False) -> bool:
+    """Una risposta è completa se il JSON si legge per intero E il modello ha
+    messo il tag di chiusura — oppure, se il tag manca, se il provider non
+    l'ha segnalata come tagliata. Il tag da solo non basta (un modello può
+    dimenticarlo), il taglio da solo nemmeno (un JSON può chiudersi giusto sul
+    limite): insieme sono affidabili."""
+    t = (testo or "").strip()
+    t = re.sub(r"^`{3}(?:json)?\s*", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"\s*`{3}$", "", t)
+    try:
+        dati = json.loads(t)
+    except (json.JSONDecodeError, ValueError):
+        return False
+    if not isinstance(dati, dict):
+        return False
+    if dati.get("complete") is True:
+        return True
+    return not troncata
+
+
+def unisci_continuazione(parziale: str, seguito: str) -> str:
+    """Riattacca il seguito alla parte già scritta.
+
+    I modelli, quando riprendono, spesso ripetono gli ultimi caratteri o
+    aprono un recinto markdown. Si toglie il recinto e si cerca la
+    sovrapposizione più lunga fra la coda della prima parte e la testa della
+    seconda: se c'è, si taglia."""
+    seguito = re.sub(r"^\s*`{3}(?:json)?\s*", "", seguito or "")
+    seguito = re.sub(r"\s*`{3}\s*$", "", seguito)
+    coda = parziale[-200:]
+    for lunghezza in range(min(len(coda), len(seguito)), 11, -1):
+        if seguito.startswith(coda[-lunghezza:]):
+            return parziale + seguito[lunghezza:]
+    return parziale + seguito
+
+
+# =============================================================================
 # IL MERMAID, RESO STAMPABILE
 # =============================================================================
 _INTESTAZIONI = ("graph ", "flowchart ", "sequencediagram", "classdiagram",
@@ -540,8 +627,12 @@ def pulisci_mermaid(valore: Any) -> str:
     righe = [r.rstrip() for r in testo.splitlines() if r.strip()]
     if not righe:
         return ""
-    if not righe[0].lower().startswith(_INTESTAZIONI):
-        righe.insert(0, "flowchart TD")
+    # L'intestazione va cercata (e, se manca, inserita) DOPO le eventuali
+    # direttive `%%{init: …}%%`: quelle devono restare in cima, e un
+    # `flowchart TD` messo sopra di loro rompe il diagramma.
+    primo = next((i for i, r in enumerate(righe) if not r.lstrip().startswith("%%")), len(righe))
+    if primo >= len(righe) or not righe[primo].lower().startswith(_INTESTAZIONI):
+        righe.insert(primo, "flowchart TD")
     # Etichette con parentesi o virgolette: sono la prima causa di diagramma
     # che non si disegna. Si mettono fra virgolette e si ripuliscono. Si scorre
     # la riga a mano invece di usare una regex perché le forme si annidano
@@ -605,6 +696,11 @@ def _etichette(riga: str) -> str:
     Le due cose vanno fatte nello stesso passaggio perché la distinzione fra
     «dentro un'etichetta» e «fuori» la conosce solo questo scanner: nel testo
     visibile `toLocaleString` va lasciato com'è, come identificatore no."""
+    # Una direttiva `%%{init: {...}}%%` o un commento `%%` non sono un nodo:
+    # le graffe lì dentro sono JSON, e metterle fra virgolette come se fossero
+    # un'etichetta romperebbe la configurazione del diagramma.
+    if riga.lstrip().startswith("%%"):
+        return riga
     fuori, buffer, i, n = [], [], 0, len(riga)
 
     def svuota():
@@ -735,8 +831,13 @@ def _vuota(riga: Dict[str, Any], spec: Dict[str, Any]) -> bool:
     return True
 
 
-def normalizza(grezzo: Any, avvisi_iniziali: List[str] = None) -> Dict[str, Any]:
+def normalizza(grezzo: Any, avvisi_iniziali: List[str] = None,
+               saltate: List[str] = None) -> Dict[str, Any]:
+    """`saltate`: sezioni non chieste al modello di proposito (profondità
+    Quick). Restano vuote senza essere segnalate come mancanti: un avviso su
+    una cosa decisa da noi non è un avviso, è rumore."""
     avvisi: List[str] = list(avvisi_iniziali or [])
+    saltate = set(saltate or [])
     fuori: Dict[str, Any] = json.loads(json.dumps(RISULTATO_VUOTO))
     if not isinstance(grezzo, dict):
         avvisi.append("The answer was not a JSON object: empty result.")
@@ -751,7 +852,8 @@ def normalizza(grezzo: Any, avvisi_iniziali: List[str] = None) -> Dict[str, Any]
     for nome, spec in CAMPI.items():
         grezze = grezzo.get(nome)
         if grezze is None:
-            avvisi.append(f"{nome}: section absent from the answer")
+            if nome not in saltate:
+                avvisi.append(f"{nome}: section absent from the answer")
             grezze = []
         if isinstance(grezze, dict):  # un oggetto solo invece di una lista
             grezze = [grezze]
@@ -773,7 +875,7 @@ def normalizza(grezzo: Any, avvisi_iniziali: List[str] = None) -> Dict[str, Any]
 
     for campo in CAMPI_MERMAID:
         fuori[campo] = pulisci_mermaid(grezzo.get(campo))
-        if not fuori[campo]:
+        if not fuori[campo] and campo not in saltate:
             avvisi.append(f"{campo}: no usable diagram in the model's answer")
 
     fuori["contract_version"] = VERSIONE_CONTRATTO

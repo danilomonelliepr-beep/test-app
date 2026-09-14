@@ -89,6 +89,13 @@ CFG_BASE: Dict[str, Any] = {
 
 PROMPT_PROVA = "Rispondi con una sola parola: OK."
 
+# La richiesta di proseguire, uguale per i tre provider. In inglese perché in
+# inglese è il contratto che il modello sta scrivendo.
+_CONTINUA = ("Continue your previous answer exactly from the point where it stopped. "
+             "Output only the remaining characters: no preamble, no code fences, do not "
+             "repeat anything you already wrote. Finish the JSON object and end it with "
+             "the \"complete\": true property.")
+
 # ═══ QUANTO DEVE PENSARE IL MODELLO ═══════════════════════════════════════
 # È la leva che sposta di più il tempo di risposta, molto più della scelta fra
 # un modello e l'altro: lo stesso flash con il ragionamento alto ci mette
@@ -245,12 +252,17 @@ def con_scadenza(fn: Callable[[], Any], tetto_s: float) -> Any:
 # · l'elenco scoperto (6 ore);
 # · gli adattamenti per modello (per sempre: sono proprietà del modello, non
 #   un suo umore — vedi «il 400 che non è una chiave sbagliata»).
-# Di suo è un file JSON accanto al modulo. Chi ha un posto migliore (Redis, la
+# Di suo è un file JSON in `cache/`. Chi ha un posto migliore (Redis, la
 # sessione, un database) passa la propria `memoria`.
 # =============================================================================
 class MemoriaFile:
     def __init__(self, percorso: Optional[str] = None):
-        self.f = Path(percorso or (Path(__file__).with_name(".catena_modelli.json")))
+        # Nella cartella `cache/`, visibile e non versionata, insieme ai lotti
+        # dell'applicazione: niente file nascosti accanto al codice.
+        if percorso:
+            self.f = Path(percorso)
+        else:
+            self.f = Path(__file__).parent / "cache" / "catena_modelli.json"
         self._lock = threading.Lock()
 
     def _leggi(self) -> Dict[str, Any]:
@@ -261,6 +273,7 @@ class MemoriaFile:
 
     def _scrivi(self, dati: Dict[str, Any]) -> None:
         try:
+            self.f.parent.mkdir(exist_ok=True)
             tmp = self.f.with_suffix(".tmp")
             tmp.write_text(json.dumps(dati, ensure_ascii=False), "utf-8")
             tmp.replace(self.f)
@@ -438,10 +451,17 @@ class GeminiProvider(Provider):
             # volta, si riparte senza, invece di risbatterci contro.
             if o.get("schema") and not adatta.get("no_schema"):
                 cfg["responseSchema"] = o["schema"]
-        corpo: Dict[str, Any] = {
-            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "generationConfig": cfg,
-        }
+        contenuti = [{"role": "user", "parts": [{"text": prompt}]}]
+        if o.get("parziale"):
+            # Continuazione: il pezzo già scritto torna come turno del modello,
+            # seguito dalla richiesta di proseguire. In modo testo, non JSON:
+            # il seguito da solo non è un JSON valido e uno schema lo
+            # rifiuterebbe.
+            contenuti.append({"role": "model", "parts": [{"text": o["parziale"]}]})
+            contenuti.append({"role": "user", "parts": [{"text": _CONTINUA}]})
+            cfg.pop("responseMimeType", None)
+            cfg.pop("responseSchema", None)
+        corpo: Dict[str, Any] = {"contents": contenuti, "generationConfig": cfg}
         if o.get("sistema"):
             corpo["systemInstruction"] = {"parts": [{"text": o["sistema"]}]}
         url = f"{self.base}/models/{modello}:generateContent?key={requests.utils.quote(self.chiave)}"
@@ -566,6 +586,18 @@ class ClaudeProvider(Provider):
         # Con il ragionamento esteso il prefill non è ammesso, e si rinuncia:
         # le difese a valle (estrai_json, ripara_troncato) bastano.
         prefill = "{" if (o.get("json_mode") and not pensa) else ""
+        if o.get("parziale"):
+            if pensa:
+                # Con il ragionamento esteso il prefill non è ammesso: il pezzo
+                # scritto torna come turno precedente e si chiede il seguito.
+                messaggi.append({"role": "assistant", "content": o["parziale"]})
+                messaggi.append({"role": "user", "content": _CONTINUA})
+                prefill = ""
+            else:
+                # Il modo migliore che esista: il pezzo scritto diventa il
+                # prefill, e il modello continua LA STESSA frase, senza
+                # nemmeno sapere di essersi fermato.
+                prefill = o["parziale"].rstrip()
         if prefill:
             messaggi.append({"role": "assistant", "content": prefill})
         corpo: Dict[str, Any] = {
@@ -710,12 +742,15 @@ class AzureProvider(Provider):
         if o.get("sistema"):
             messaggi.append({"role": "system", "content": o["sistema"]})
         messaggi.append({"role": "user", "content": prompt})
+        if o.get("parziale"):
+            messaggi.append({"role": "assistant", "content": o["parziale"]})
+            messaggi.append({"role": "user", "content": _CONTINUA})
         corpo: Dict[str, Any] = {"model": modello, "messages": messaggi}
         campo_token = "max_completion_tokens" if adatta.get("max_completion_tokens") else "max_tokens"
         corpo[campo_token] = int(o.get("max_token", CFG_BASE["max_token"]))
         if not adatta.get("no_temperature"):
             corpo["temperature"] = 0
-        if o.get("json_mode") and not adatta.get("no_json_mode"):
+        if o.get("json_mode") and not adatta.get("no_json_mode") and not o.get("parziale"):
             corpo["response_format"] = {"type": "json_object"}
         # `reasoning_effort` esiste solo sui modelli che ragionano: mandarlo a
         # un gpt-4o costa un 400 e un giro a vuoto. Si guarda il nome prima, e
@@ -802,7 +837,7 @@ ALIAS = {"gemini": "Google Gemini", "claude": "Anthropic Claude",
 class CatenaModelli:
     def __init__(self, provider: str, chiave: str, endpoint: str = "", api_version: str = "",
                  deployment: str = "", preferenza: str = "qualita",
-                 ragionamento: str = "low", lingua: str = "it",
+                 ragionamento: str = "low", lingua: str = "it", preferito: str = "",
                  cfg: Optional[Dict[str, Any]] = None, memoria: Optional[MemoriaFile] = None,
                  log: Optional[Callable[[str], None]] = None):
         nome = ALIAS.get(str(provider).lower(), provider)
@@ -813,6 +848,12 @@ class CatenaModelli:
         self.lingua = "en" if lingua == "en" else "it"
         self.preferenza = "velocita" if preferenza == "velocita" else "qualita"
         self.ragionamento = ragionamento if ragionamento in LIVELLI else "low"
+        # Il modello scelto a mano va IN TESTA alla catena, per qualunque
+        # provider; gli altri restano sotto come rete. Prima questo valore
+        # contava solo per Azure (dove è il nome del deployment): su Gemini e
+        # Claude il campo «Preferred model» non faceva niente, e nessuno se ne
+        # accorgeva perché la catena andava comunque.
+        self.preferito = (preferito or deployment or "").strip()
         self.log = log or (lambda s: None)
         self.memoria = memoria if memoria is not None else MemoriaFile()
         self.diario: List[str] = []
@@ -956,12 +997,14 @@ class CatenaModelli:
                 except ErroreModello as e:
                     ultima = e.causa
                     self._nota(f"  {m}: {e.causa} (tentativo {tentativo+1}/{int(self.C['tentativi_vera'])})")
-                    # Una risposta troncata all'ultimo giro si CONSEGNA:
-                    # ripetere lo stesso prompt non accorcia una risposta troppo
-                    # lunga, e il parziale spesso si sa riparare a valle.
+                    # Una risposta TAGLIATA non è un guasto: è una risposta a
+                    # metà, dello stesso modello, che va CONTINUATA. Ripetere
+                    # lo stesso prompt non la accorcia, e cambiare modello
+                    # butta via il pezzo scritto per rifarlo con un altro che
+                    # scriverà altrettanto. Si consegna subito, marcata, e chi
+                    # chiama chiede il seguito con `continua`.
                     if e.causa == "troncata" and e.parziale.strip():
-                        if tentativo == int(self.C["tentativi_vera"]) - 1 or not o.get("json_mode"):
-                            return Risposta(e.parziale, m, True, int((time.time() - t1) * 1000), self.nome_provider)
+                        return Risposta(e.parziale, m, True, int((time.time() - t1) * 1000), self.nome_provider)
                     if e.causa == "parametro":
                         # Adattato e ricordato: si riprova con la richiesta
                         # corretta, senza consumare i tentativi veri.
@@ -984,6 +1027,60 @@ class CatenaModelli:
                 break
         raise NessunModello(ultima, list(self.diario))
 
+    # ═══ LA CONTINUAZIONE: stesso modello, dallo stesso punto ════════════
+    # Niente scoperta, niente prova, niente scalata: il modello è quello che
+    # ha scritto la prima parte, e solo lui sa proseguirla con la stessa voce.
+    # Se è occupato si riprova con lui; se è definitivamente giù si fallisce,
+    # non si passa a un altro — un altro ricomincerebbe da capo.
+    def continua(self, modello: str, prompt: str, parziale: str, **o: Any) -> Risposta:
+        ultima = "nessuno"
+        tentativo, adattamenti = 0, 0
+        while tentativo < int(self.C["tentativi_vera"]):
+            t1 = time.time()
+            try:
+                r = self._chiama_uno(modello, prompt, tetto_s=self.C["vera_s"],
+                                     max_token=o.get("max_token", self.C["max_token"]),
+                                     json_mode=False, sistema=o.get("sistema"),
+                                     ragionamento=o.get("ragionamento", self.ragionamento),
+                                     parziale=parziale)
+                ms = int((time.time() - t1) * 1000)
+                self._nota(f"  {modello}: continua in {ms} ms (+{len(r['testo'])} caratteri)")
+                return Risposta(r["testo"], modello, False, ms, self.nome_provider)
+            except ErroreModello as e:
+                ultima = e.causa
+                self._nota(f"  {modello}: {e.causa} nella continuazione (tentativo {tentativo+1})")
+                if e.causa == "troncata" and e.parziale.strip():
+                    return Risposta(e.parziale, modello, True, int((time.time() - t1) * 1000),
+                                    self.nome_provider)
+                if e.causa == "parametro":
+                    adattamenti += 1
+                    if adattamenti <= 4:
+                        continue
+                    break
+                if e.causa in RIPROVA:
+                    tentativo += 1
+                    time.sleep(self.C["pausa_base_s"] * tentativo)
+                    continue
+                break
+            except Exception as e:  # noqa: BLE001
+                ultima = "rete"
+                self._nota(f"  {modello}: imprevisto {type(e).__name__} ({e})")
+                break
+        raise NessunModello(ultima, list(self.diario))
+
+    def successivo(self, modello: str) -> Optional[str]:
+        """Il modello che viene dopo nella catena: quello a cui passare il
+        seguito quando chi ha scritto la prima parte non risponde più. Non si
+        sceglie da soli — è la persona a decidere — ma bisogna sapere chi è."""
+        lista = self.catena()["lista"]
+        if self.preferito and self.preferito in lista:
+            lista = self._in_testa(lista, self.preferito)
+        candidati = [m for m in lista if m != modello]
+        if modello in lista:
+            dopo = lista[lista.index(modello) + 1:]
+            candidati = dopo + [m for m in lista[:lista.index(modello)]]
+        return candidati[0] if candidati else None
+
     # ═══ IL FILO: scoperta → buono in memoria o prova → chiamata ═════════
     def chiedi(self, prompt: str, **o: Any) -> Risposta:
         esito = self.catena(forza=o.get("forza_elenco", False))
@@ -993,7 +1090,16 @@ class CatenaModelli:
             raise NessunModello("nokey", list(self.diario))
 
         buono = self.memoria.leggi_buono(self.p.spazio(), self.C["memoria_s"])
-        catena = self._in_testa(lista, buono)
+        if self.preferito:
+            # La scelta della persona vince sulla memoria: la catena parte dal
+            # modello scelto, e il ricordo del «buono» vale solo se è lui.
+            if self.preferito not in lista:
+                lista = [self.preferito] + lista
+            catena = self._in_testa(lista, self.preferito)
+            if buono != self.preferito:
+                buono = None
+        else:
+            catena = self._in_testa(lista, buono)
         if buono and buono in lista:
             self._nota(f"Modello buono ricordato: {buono} — la prova si salta")
         else:

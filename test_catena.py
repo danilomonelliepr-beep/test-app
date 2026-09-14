@@ -297,8 +297,6 @@ P("lo schema nativo elenca tutte le sezioni del contratto",
 # =============================================================================
 # I DIAGRAMMI (senza disegnarli davvero: si controlla la geometria)
 # =============================================================================
-import io as _io
-
 import mermaid_render as mr
 
 
@@ -383,7 +381,7 @@ grosso = contract.normalizza({"dependencies": [
     for i in range(80)]})
 disegno = diagrams.call_graph(grosso)
 P(f"un grafo enorme viene tagliato e lo dichiara ({len(disegno.splitlines())-1} righe su 80)",
-  len(disegno.splitlines()) - 1 <= diagrams.MAX_ARCHI + 1 and "non mostrati" in disegno)
+  len(disegno.splitlines()) - 1 <= diagrams.MAX_ARCHI + 1 and "more not shown" in disegno)
 
 P("i campi mermaid sono ora obbligatori nello schema di Gemini",
   all(m in contract.schema_gemini()["required"] for m in contract.CAMPI_MERMAID))
@@ -461,7 +459,7 @@ class _FintoSt:
             if k in ("button", "checkbox"):
                 return False
             if k == "file_uploader":
-                return []
+                return [] if kw.get("accept_multiple_files") else None
             if k == "data_editor":
                 return a[0]
             return _FintoSt()
@@ -496,8 +494,9 @@ meta = app.extract_technical_metadata(sorgenti)
 tipi = {d["target"]: (d["dependency_type"], d["confidence"]) for d in meta["dependencies"]}
 P("una chiamata a una procedura dichiarata in un ALTRO file diventa CALL certa",
   tipi.get("CALC_SCONTO") == ("CALL", "HIGH"))
-P("una chiamata fuori dal perimetro resta probabile, ma a confidenza bassa",
-  tipi.get("UTL_FILE.PUT_LINE") == ("PROBABLE_CALL", "LOW"))
+P("una chiamata confermata dall'albero ma fuori dal perimetro: certa sul fatto, "
+  "incerta sul bersaglio",
+  tipi.get("UTL_FILE.PUT_LINE") == ("CALL", "MEDIUM"))
 P("il rumore di libreria non arriva nemmeno alle tabelle",
   "System.out.println" not in tipi and meta["dependency_resolution"]["discarded_as_library_noise"] >= 1)
 P("in un PL/SQL non nascono più «metodi Java» fantasma",
@@ -521,7 +520,7 @@ P("l'indicatore misura l'ancoraggio, non promette completezza",
 # =============================================================================
 # IL LIVELLO DI RAGIONAMENTO
 # =============================================================================
-from model_chain import LIVELLI, _almeno, _su_di_uno
+from model_chain import _almeno, _su_di_uno
 
 P("la scala del ragionamento sale di un gradino per volta",
   _su_di_uno("minimal") == "low" and _su_di_uno("low") == "medium" and _su_di_uno("high") is None)
@@ -651,6 +650,495 @@ P(f"il PDF si costruisce ({len(pdf)//1024} KB)", pdf[:5] == b"%PDF-" and len(pdf
 P(f"il Word si costruisce ({len(docx)//1024} KB)", docx[:2] == b"PK" and len(docx) > 3000)
 P("i caratteri del documento sono quelli dell'applicazione",
   exporter._registra_font() and exporter.FONT["corpo"] == "PlexSans")
+
+
+# =============================================================================
+# LE ETICHETTE CHE USCIVANO DALLE CASELLE
+# =============================================================================
+direttiva = mr._direttiva()
+P("la configurazione del disegno viaggia dentro il diagramma",
+  direttiva.startswith("%%{init:") and direttiva.endswith("}%%"))
+P("le etichette non sono più HTML: è la causa del testo fuori dalle caselle",
+  '"htmlLabels":false' in direttiva.replace(" ", "")
+  and mr.CONFIG_MERMAID["flowchart"]["htmlLabels"] is False)
+
+con_direttiva = contract.pulisci_mermaid([
+    '%%{init: {"theme":"neutral"}}%%', "flowchart TD",
+    '  n_a["Extract & Format Contact Emails"] --> n_b["Call GET_PDF_DATA AJAX"]'])
+P("la pulizia non tocca la direttiva e non le mette un'intestazione sopra",
+  con_direttiva.splitlines()[0].startswith("%%{init")
+  and con_direttiva.splitlines()[1].startswith("flowchart"))
+senza_intestazione = contract.pulisci_mermaid(
+    ['%%{init: {"theme":"neutral"}}%%', '  n_a["A"] --> n_b["B"]'])
+P("l'intestazione mancante si inserisce dopo la direttiva, non prima",
+  senza_intestazione.splitlines()[0].startswith("%%{init")
+  and senza_intestazione.splitlines()[1] == "flowchart TD")
+
+
+# =============================================================================
+# LEGGERE IL CODICE INVECE DI INDOVINARLO
+# =============================================================================
+py_src = ("import os\n"
+          "def calcola(x):\n"
+          "    return applica_sconto(x) + os.path.join('a','b')\n"
+          "def applica_sconto(x):\n"
+          "    return int(x) * 0.9\n"
+          "esito = spedisci_mail(calcola(10))\n")
+dip_py = app.extract_calls_python(py_src, "f.py")
+bersagli = {d["target"] for d in dip_py}
+P("in Python le chiamate si leggono dall'albero, a confidenza alta",
+  "spedisci_mail" in bersagli and all(d["confidence"] == "HIGH" for d in dip_py))
+P("quello che è definito nel file stesso non è una dipendenza",
+  "applica_sconto" not in bersagli and "calcola" not in bersagli)
+P("le funzioni di libreria e quelle di Python non sporcano l'elenco",
+  not {"int", "os.path.join", "str"} & bersagli)
+P("un file Python illeggibile non fa saltare nulla, si torna a indovinare",
+  app.extract_calls_python("def (((", "rotto.py") is None)
+
+sql_src = "PROCEDURE EMETTI IS BEGIN CALC_SCONTO(1); SUBSTR(x,1,2); UTL_FILE.PUT_LINE(y); END;"
+nomi_sql = app.nomi_chiamati_sql(sql_src)
+P(f"l'albero SQL riconosce le chiamate non standard ({sorted(nomi_sql)})",
+  "put_line" in nomi_sql and "substr" not in nomi_sql)
+sorgenti_sql = [{"filename": "p.sql", "language": "SQL", "hash": "s", "content": sql_src}]
+meta_sql = app.extract_technical_metadata(sorgenti_sql)
+per_bersaglio = {d["target"]: d for d in meta_sql["dependencies"]}
+P("quello che l'albero conferma diventa una chiamata certa",
+  per_bersaglio.get("UTL_FILE.PUT_LINE", {}).get("dependency_type") == "CALL")
+P("quello che l'albero non vede resta, marcato come sospetto: niente si perde",
+  per_bersaglio.get("CALC_SCONTO", {}).get("dependency_type") == "PROBABLE_CALL")
+
+# ── i lotti seguono le dipendenze, non l'alfabeto ─────────────────────────
+coppie = []
+for a, b in [("alfa", "zulu"), ("beta", "yankee")]:
+    coppie.append({"filename": f"{a}.sql", "language": "SQL", "hash": a,
+                   "content": f"PROCEDURE P_{a.upper()} IS BEGIN P_{b.upper()}(1); END;" + "x" * 30000})
+    coppie.append({"filename": f"{b}.sql", "language": "SQL", "hash": b,
+                   "content": f"PROCEDURE P_{b.upper()} IS BEGIN NULL; END;" + "x" * 30000})
+meta_coppie = app.extract_technical_metadata(coppie)
+lotti = app.split_into_batches(coppie, 70000, metadata=meta_coppie)
+insieme = [{s["filename"] for s in l} for l in lotti]
+P(f"i file che si chiamano fra loro finiscono nello stesso lotto ({insieme})",
+  any({"alfa.sql", "zulu.sql"} <= g for g in insieme)
+  and any({"beta.sql", "yankee.sql"} <= g for g in insieme))
+P("nessun file viene spezzato a metà",
+  sum(len(l) for l in lotti) == len(coppie))
+
+# ── i passi del processo, in ordine ───────────────────────────────────────
+proc = contract.normalizza({"business_processes": [
+    {"process_name": "Invoicing", "trigger": "cron", "outcome": "Invoices issued",
+     "steps": ["read orders", "apply discounts", "send to SAP"]}]})
+P("i passi sono un dato ordinato, non solo un disegno",
+  proc["business_processes"][0]["steps"] == "read orders; apply discounts; send to SAP")
+catena_passi = diagrams.process_flow(proc)
+posizioni = [catena_passi.index(x) for x in ("read orders", "apply discounts", "send to SAP")]
+P("il diagramma costruito dai dati rispetta l'ordine di esecuzione",
+  posizioni == sorted(posizioni) and catena_passi.count("-->") >= 4)
+P("il contratto è salito di versione", contract.VERSIONE_CONTRATTO == "2.1")
+
+# ── quanto dei fatti del parser è stato descritto ─────────────────────────
+due = [{"filename": "a.pkb", "language": "Oracle PL/SQL Package Body", "hash": "1",
+        "content": "PROCEDURE CALC IS BEGIN IF x>100 THEN NULL; END IF; SELECT * FROM ORDINI; END;"},
+       {"filename": "b.pkb", "language": "Oracle PL/SQL Package Body", "hash": "2",
+        "content": "PROCEDURE MUTO IS BEGIN IF y=1 THEN NULL; END IF; END;"}]
+meta_due = app.extract_technical_metadata(due)
+risultato_due = app.merge_static_and_ai_results(contract.normalizza({
+    "business_rules": [{"rule_name": "Soglia", "condition": "x>100", "source_file": "a.pkb",
+                        "source_component": "CALC", "confidence": "HIGH", "evidence": "r.1"}]}),
+    meta_due)
+ind_due = app.quality_indicators(risultato_due, meta_due)
+P(f"si misura quanti componenti del parser sono stati descritti ({ind_due['componenti_pct']}%)",
+  ind_due["componenti_descritti"] == 1 and ind_due["componenti_parser"] == 2)
+P(f"i file pieni di condizioni senza nemmeno una regola vengono segnalati ({ind_due['file_muti']})",
+  ind_due["file_muti"] == ["b.pkb"])
+
+P("il Word usa caratteri che esistono su tutte le macchine",
+  exporter.NOME_WORD == "Arial" and exporter.NOME_WORD_MONO == "Courier New")
+
+
+# =============================================================================
+# RIPRENDERE UN'ANALISI SALVATA
+# =============================================================================
+import json as _json
+
+vecchio_json = {"contract_version": "2.0", "executive_summary": "Old.", "application_purpose": "P.",
+                "business_processes": [{"process_name": "Inv", "trigger": "cron", "outcome": "done"}],
+                "business_rules": [{"rule_name": "R1", "condition": "c", "sme_approved": True,
+                                    "confidence": "High"},
+                                   {"rule_name": "R2", "condition": "d", "sme_approved": False}],
+                "validation_questions": ["Why 30 days?"]}
+ricaricato, meta_ric = app.carica_analisi_salvata(_json.dumps(vecchio_json).encode())
+P("un JSON della versione 2.0 si ricarica e sale alla 2.1",
+  ricaricato["contract_version"] == "2.1")
+P("le spunte dell'esperto sopravvivono al salvataggio e al ricaricamento",
+  [r["sme_approved"] for r in ricaricato["business_rules"]] == [True, False])
+P("il campo `steps` che il vecchio formato non aveva resta vuoto, non rompe",
+  ricaricato["business_processes"][0]["steps"] == "")
+P("le domande scritte come stringhe diventano righe",
+  ricaricato["validation_questions"][0]["question"] == "Why 30 days?")
+try:
+    app.carica_analisi_salvata(b'{"x": 1}')
+    ESITI.append(False); print("✗ un JSON estraneo doveva essere rifiutato")
+except ValueError:
+    ESITI.append(True); print("✓ un JSON estraneo viene rifiutato con un motivo")
+nuovo_json = dict(vecchio_json, _metadata={"file_count": 2, "files": []}, _modello="gemini-3.7-pro")
+ric2, meta2 = app.carica_analisi_salvata(_json.dumps(nuovo_json).encode())
+P("un JSON della versione nuova riporta anche i metadati e chi ha risposto",
+  meta2.get("file_count") == 2 and ric2["_modello"] == "gemini-3.7-pro")
+
+
+# =============================================================================
+# QUALUNQUE FILE DI TESTO ENTRA; I PATTERN GIRANO SOLO SUL LORO LINGUAGGIO
+# =============================================================================
+class _Finto:
+    def __init__(self, nome, dati):
+        self.name, self._d = nome, dati
+
+    def getvalue(self):
+        return self._d
+
+
+P("un .vb non viene più respinto e si chiama col suo nome",
+  app.detect_language_from_filename("CPDB_Product_D.vb") == "VB.NET")
+P("un'estensione sconosciuta entra lo stesso, dichiarata come tale",
+  app.detect_language_from_filename("cosa.xyz").startswith("Unknown"))
+try:
+    app.build_source_collection([_Finto("x.dll", b"MZ\x90\x00\x03binario")], "", "")
+    ESITI.append(False); print("✗ un binario doveva essere respinto")
+except ValueError as e:
+    P("un binario viene respinto con un motivo e un rimedio", "binary" in str(e))
+
+vb_src = ("Imports System.Data\nPublic Class Prod\n    Public Sub Load()\n        On Error Resume Next\n"
+          "    End Sub\n    Private Function Disc() As Decimal\n        Return 1\n    End Function\n"
+          "    Public Property Name() As String\n    End Property\nEnd Class\n")
+meta_vb = app.extract_technical_metadata([{"filename": "p.vb", "language": "VB.NET", "hash": "v",
+                                           "content": vb_src}])
+tipi_vb = sorted((c["component_name"], c["component_type"]) for c in meta_vb["components"])
+P(f"in VB si riconoscono Sub, Function, Property e Class, una volta ciascuno ({len(tipi_vb)})",
+  tipi_vb == [("Disc", "VB_FUNCTION"), ("Load", "VB_PROCEDURE"), ("Name", "VB_PROPERTY"),
+              ("Prod", "VB_CLASS")])
+P("Imports diventa una dipendenza, On Error Resume Next un rischio",
+  any(d["dependency_type"] == "VB_IMPORTS" for d in meta_vb["dependencies"])
+  and any(r["risk_type"] == "SUPPRESSED_ERRORS" for r in meta_vb["local_risks"]))
+
+meta_sql = app.extract_technical_metadata([{"filename": "q.pkb", "language": "Oracle PL/SQL Package Body",
+                                            "hash": "q", "content": "END FUNCTION;\n  Public x"}])
+P("«End Function» seguito da «Public» non fabbrica più una funzione fantasma",
+  not any(c["component_name"].lower() == "public" for c in meta_sql["components"]))
+P("i rischi VB non girano sui file SQL, e viceversa",
+  not any(r["risk_type"] == "SUPPRESSED_ERRORS" for r in app.extract_local_risks(
+      "On Error Resume Next", "x.sql", "SQL")))
+
+jcl_src = "//BILL JOB X\n//STEP010 EXEC PGM=CALCINV\n//IN DD DSN=PROD.ORDERS,DISP=SHR\n"
+meta_jcl = app.extract_technical_metadata([{"filename": "b.jcl", "language": "JCL", "hash": "j",
+                                            "content": jcl_src}])
+P("in un JCL gli step sono componenti, i programmi eseguiti dipendenze, i dataset oggetti dati",
+  any(c["component_type"] == "JCL_STEP" for c in meta_jcl["components"])
+  and any(d["target"] == "CALCINV" for d in meta_jcl["dependencies"])
+  and any(o["object_name"] == "PROD.ORDERS" for o in meta_jcl["data_objects"]))
+
+
+# =============================================================================
+# VELOCITÀ: PROFONDITÀ, LOTTI IN PARALLELO, CACHE DEI LOTTI
+# (l'orchestrazione intera, con un provider finto e un lock per contare)
+# =============================================================================
+import json as _j
+import shutil as _sh
+import threading as _th
+import time as _t
+
+_chiamate, _in_volo, _picco = [], [0], [0]
+_lock = _th.Lock()
+
+
+def _post_orchestra(url, **kw):
+    corpo = kw.get("json") or {}
+    prompt = corpo["contents"][0]["parts"][0]["text"] if "contents" in corpo else ""
+    with _lock:
+        _in_volo[0] += 1
+        _picco[0] = max(_picco[0], _in_volo[0])
+    try:
+        if "OK." in prompt:
+            testo = "OK"
+            with _lock:
+                _chiamate.append("prova")
+        elif "cross_batch_dependencies" in prompt:
+            testo = _j.dumps({"executive_summary": "Whole.", "application_purpose": "B.",
+                              "cross_batch_dependencies": [], "validation_questions": []})
+            with _lock:
+                _chiamate.append("consolidamento")
+        else:
+            _t.sleep(0.25)   # finge il tempo del modello: serve a misurare il parallelismo
+            nomi = re.findall(r"name=(\S+)", prompt)
+            testo = _j.dumps({"executive_summary": "S.", "application_purpose": "P.",
+                              "business_rules": [{"rule_name": "R " + n, "condition": "c",
+                                                  "source_file": n, "confidence": "HIGH"} for n in nomi]})
+            with _lock:
+                _chiamate.append("analisi")
+        return FintaRisposta(200, {"candidates": [{"content": {"parts": [{"text": testo}]},
+                                                  "finishReason": "STOP"}]})
+    finally:
+        with _lock:
+            _in_volo[0] -= 1
+
+
+def _get_orchestra(url, **kw):
+    return FintaRisposta(200, {"models": [{"name": "models/gemini-3.7-pro",
+                                            "supportedGenerationMethods": ["generateContent"]}]})
+
+
+model_chain.requests = types.SimpleNamespace(get=_get_orchestra, post=_post_orchestra,
+                                             utils=__import__("requests").utils,
+                                             exceptions=__import__("requests").exceptions)
+model_chain.MemoriaFile = MemoriaRam          # niente file di memoria su disco
+_cache_prova = app.CARTELLA_CACHE.parent / "cache_collaudo"
+# Le funzioni dell'app leggono la variabile dal LORO spazio dei nomi (`_ns`),
+# non dall'oggetto `app` che è solo una vista: si cambia là, altrimenti il
+# collaudo usa la cache vera e la seconda volta che gira trova tutto già fatto.
+_ns["CARTELLA_CACHE"] = _cache_prova
+_sh.rmtree(_cache_prova, ignore_errors=True)
+
+sei = []
+for a, b in [("alfa", "zulu"), ("beta", "yankee"), ("gamma", "xray")]:
+    sei.append({"filename": f"{a}.sql", "language": "SQL", "hash": a,
+                "content": f"PROCEDURE P_{a.upper()} IS BEGIN P_{b.upper()}(1); END;" + "x" * 45000})
+    sei.append({"filename": f"{b}.sql", "language": "SQL", "hash": b,
+                "content": f"PROCEDURE P_{b.upper()} IS BEGIN NULL; END;" + "x" * 45000})
+meta_sei = app.extract_technical_metadata(sei)
+
+_chiamate.clear(); _picco[0] = 0
+t0 = _t.time()
+uno, _ = app.analyze_legacy_application(sei, meta_sei, "Google Gemini", "k", "", None, "qualita",
+                                     ragionamento="low", parallelismo=3, usa_cache=True)
+t_par = _t.time() - t0
+P(f"tre lotti in parallelo: fino a {_picco[0]} chiamate in volo insieme ({t_par:.2f}s)",
+  uno["_lotti"] == 3 and _picco[0] >= 2 and t_par < 0.25 * 3)
+P("una sola prova di contatto per tutta l'esecuzione, non una per lotto",
+  _chiamate.count("prova") == 1 and _chiamate.count("analisi") == 3)
+P("i risultati dei lotti sono tutti presenti, in ordine, con id unici",
+  len(uno["business_rules"]) == 6
+  and len({r["rule_id"] for r in uno["business_rules"]}) == 6)
+
+_chiamate.clear()
+due, _ = app.analyze_legacy_application(sei, meta_sei, "Google Gemini", "k", "", None, "qualita",
+                                     ragionamento="low", parallelismo=3, usa_cache=True)
+P("la seconda esecuzione identica non paga nessun lotto: tutti dalla cache",
+  _chiamate.count("analisi") == 0 and due["_riusati"] == 3
+  and len(due["business_rules"]) == 6)
+
+sette = sei + [{"filename": "nuovo.sql", "language": "SQL", "hash": "nuovo",
+                "content": "PROCEDURE P_NUOVO IS BEGIN NULL; END;" + "x" * 45000}]
+_chiamate.clear()
+tre, _ = app.analyze_legacy_application(sette, app.extract_technical_metadata(sette), "Google Gemini",
+                                     "k", "", None, "qualita", ragionamento="low",
+                                     parallelismo=2, usa_cache=True)
+P(f"aggiunto un file, si paga solo il lotto nuovo ({_chiamate.count('analisi')} analisi, "
+  f"{tre['_riusati']} dalla cache)",
+  _chiamate.count("analisi") >= 1 and tre["_riusati"] >= 2)
+
+_chiamate.clear()
+app.analyze_legacy_application(sei, meta_sei, "Google Gemini", "k", "", None, "qualita",
+                               ragionamento="low", parallelismo=1, usa_cache=False)
+P("«da capo» ignora la cache e ripaga tutto", _chiamate.count("analisi") == 3)
+
+_chiamate.clear()
+rapida, _ = app.analyze_legacy_application(sei[:2], app.extract_technical_metadata(sei[:2]),
+                                        "Google Gemini", "k", "", None, "qualita",
+                                        ragionamento="low", profondita="quick", usa_cache=False)
+P("la profondità Quick lascia vuote le sezioni non chieste senza segnalarle come mancanti",
+  rapida["_profondita"] == "quick" and rapida["impact_analysis"] == []
+  and not any("impact_analysis" in a for a in rapida["contract_warnings"]))
+P("la cache distingue Quick da Full: sono risposte diverse",
+  app.chiave_lotto(sei[:2], "g", "", "q", "low", "quick")
+  != app.chiave_lotto(sei[:2], "g", "", "q", "low", "full"))
+_sh.rmtree(_cache_prova, ignore_errors=True)
+
+
+# =============================================================================
+# LA RISPOSTA TAGLIATA SI CONTINUA, CON LO STESSO MODELLO
+# =============================================================================
+_chiamate.clear()
+_pezzi = ['{"executive_summary":"S.","application_purpose":"P.","business_rules":[{"rule_name":"Discount ov',
+          'er 100","condition":"t>100","confidence":"HIGH"},{"rule_name":"Late fee","condition":"d>30",',
+          '"confidence":"HIGH"}],"complete":true}']
+_stato_finto = {"giro": 0, "modelli": []}
+
+
+def _post_taglia(url, **kw):
+    corpo = kw.get("json") or {}
+    contenuti = corpo.get("contents", [])
+    prompt = contenuti[0]["parts"][0]["text"] if contenuti else ""
+    _stato_finto["modelli"].append(url.split("/models/")[1].split(":")[0])
+    if "OK." in prompt:
+        return FintaRisposta(200, {"candidates": [{"content": {"parts": [{"text": "OK"}]},
+                                                  "finishReason": "STOP"}]})
+    # prima risposta: primo pezzo, tagliato. Continuazioni: i pezzi seguenti.
+    # Il pezzo scritto finora deve tornare nella conversazione, come turno
+    # del modello: se non torna, il modello non sa da dove riprendere.
+    giro = _stato_finto["giro"]
+    if giro > 0:
+        assert len(contenuti) == 3 and contenuti[1]["role"] == "model", "manca il pezzo scritto"
+        assert "responseSchema" not in corpo.get("generationConfig", {}), "schema in continuazione"
+    _stato_finto["giro"] += 1
+    pezzo = _pezzi[min(giro, len(_pezzi) - 1)]
+    ultimo = giro >= len(_pezzi) - 1
+    return FintaRisposta(200, {"candidates": [{"content": {"parts": [{"text": pezzo}]},
+                                              "finishReason": "STOP" if ultimo else "MAX_TOKENS"}]})
+
+
+def _get_due(url, **kw):
+    return FintaRisposta(200, {"models": [
+        {"name": "models/gemini-3.7-pro", "supportedGenerationMethods": ["generateContent"]},
+        {"name": "models/gemini-3.7-flash", "supportedGenerationMethods": ["generateContent"]}]})
+
+
+model_chain.requests = types.SimpleNamespace(get=_get_due, post=_post_taglia,
+                                             utils=__import__("requests").utils,
+                                             exceptions=__import__("requests").exceptions)
+piccolo = [{"filename": "a.sql", "language": "SQL", "hash": "cont1",
+            "content": "PROCEDURE P IS BEGIN NULL; END;"}]
+_stato_finto.update(giro=0, modelli=[])
+ris, stati = app.analyze_legacy_application(piccolo, app.extract_technical_metadata(piccolo),
+                                            "Google Gemini", "k", "", None, "qualita",
+                                            ragionamento="low", usa_cache=False)
+P("una risposta tagliata viene continuata da sola fino al tag di chiusura",
+  stati[0]["completo"] and stati[0]["giri"] == 2 and not ris["_incompleti"])
+P("il pezzo tagliato a metà parola viene riattaccato giusto",
+  any(r["rule_name"] == "Discount over 100" for r in ris["business_rules"])
+  and len(ris["business_rules"]) == 2)
+P("si continua con LO STESSO modello: il secondo della catena non viene mai chiamato",
+  set(_stato_finto["modelli"]) == {"gemini-3.7-pro"})
+
+# ── un modello che non finisce mai in due giri: si ferma e chiede a una persona ──
+_pezzi_lunghi = ['{"executive_summary":"S.","application_purpose":"P.","business_rules":[',
+                 '{"rule_name":"A","condition":"a","confidence":"HIGH"},',
+                 '{"rule_name":"B","condition":"b","confidence":"HIGH"},',
+                 '{"rule_name":"C","condition":"c","confidence":"HIGH"}],"complete":true}']
+_pezzi[:] = _pezzi_lunghi
+_stato_finto.update(giro=0, modelli=[])
+ris2, stati2 = app.analyze_legacy_application(
+    [{"filename": "b.sql", "language": "SQL", "hash": "cont2", "content": "PROCEDURE Q IS BEGIN NULL; END;"}],
+    app.extract_technical_metadata([{"filename": "b.sql", "language": "SQL", "hash": "cont2",
+                                     "content": "PROCEDURE Q IS BEGIN NULL; END;"}]),
+    "Google Gemini", "k", "", None, "qualita", ragionamento="low", usa_cache=False)
+P("dopo le continuazioni automatiche, una risposta ancora a metà si ferma e lo dichiara",
+  not stati2[0]["completo"] and ris2["_incompleti"] == [1]
+  and any("incomplete" in a for a in ris2["contract_warnings"]))
+P("intanto le righe già scritte si vedono, riparate",
+  len(ris2["business_rules"]) >= 1)
+# il bottone «Continue»: un giro in più, a mano
+catena_c = app.build_chain("Google Gemini", "k", None, "", "qualita", [], "low")
+stati2[0] = app.continua_lotto(catena_c, stati2[0], "low")
+P("il bottone «Continue» riprende dallo stesso punto e arriva in fondo",
+  stati2[0]["completo"] and stati2[0]["giri"] == 3)
+ric = app.componi_risultato(stati2, {}, catena_c, "Google Gemini", [[]], "full", "low", 0, [], 0)
+P("a risposta completa il risultato si ricompone e l'avvio si sblocca",
+  ric["_incompleti"] == [] and len(ric["business_rules"]) == 3)
+
+
+# ── se il modello che scriveva è occupato, si aspetta LUI, non si cambia ──
+_conta = {"busy": 0}
+
+
+def _post_occupato(url, **kw):
+    corpo = kw.get("json") or {}
+    contenuti = corpo.get("contents", [])
+    if len(contenuti) == 3:   # è una continuazione
+        _conta["busy"] += 1
+        if _conta["busy"] < 2:
+            return FintaRisposta(503, {}, "occupato")
+        return FintaRisposta(200, {"candidates": [{"content": {"parts": [{"text": '"x"}],"complete":true}'}]},
+                                                  "finishReason": "STOP"}]})
+    return FintaRisposta(200, {"candidates": [{"content": {"parts": [{"text": "OK"}]}, "finishReason": "STOP"}]})
+
+
+model_chain.requests = types.SimpleNamespace(get=_get_due, post=_post_occupato,
+                                             utils=__import__("requests").utils,
+                                             exceptions=__import__("requests").exceptions)
+catena_o = CatenaModelli(provider="gemini", chiave="k", memoria=MemoriaRam(),
+                         cfg={"pausa_base_s": 0.01})
+seguito = catena_o.continua("gemini-3.7-pro", "p", '{"a":[', sistema="s", ragionamento="low")
+P("un modello occupato durante la continuazione viene riprovato, non sostituito",
+  _conta["busy"] == 2 and seguito.modello == "gemini-3.7-pro")
+
+
+# =============================================================================
+# IL MODELLO PREFERITO CONTA DAVVERO, PER TUTTI I PROVIDER
+# =============================================================================
+AI, ch = nuova({"*": {"stato": 200}})
+r = AI.chiedi("x")
+primo_automatico = ch[0]
+AI, ch = nuova({"*": {"stato": 200}}, preferito="gemini-3.5-flash")
+r = AI.chiedi("x")
+P(f"il modello scelto a mano è il primo a essere provato (era {primo_automatico})",
+  ch[0] == "gemini-3.5-flash" and r.modello == "gemini-3.5-flash")
+
+AI, ch = nuova({"gemini-3.5-flash": {"stato": 503}, "*": {"stato": 200}}, preferito="gemini-3.5-flash")
+r = AI.chiedi("x")
+P("se il modello scelto è giù, si ricade sul migliore disponibile — dopo averlo riprovato",
+  r.modello == "gemini-3.7-pro" and ch.count("gemini-3.5-flash") == 2)
+
+mem = MemoriaRam()
+AI, ch = nuova({"*": {"stato": 200}}, memoria=mem)
+AI.chiedi("x")                                            # ricorda il buono automatico
+AI2 = CatenaModelli(provider="gemini", chiave="k", memoria=mem, preferito="gemini-3.5-flash")
+AI2.chiedi("y")
+P("la scelta della persona vince sulla memoria del modello buono",
+  ch[-1] == "gemini-3.5-flash")
+
+AI, ch = nuova({"*": {"stato": 200}}, preferito="gemini-9.9-custom")
+r = AI.chiedi("x")
+P("un modello scelto che la scoperta non conosce viene comunque provato per primo",
+  ch[0] == "gemini-9.9-custom")
+
+
+# =============================================================================
+# QUANDO CHI SCRIVEVA NON RISPONDE PIÙ: NON SI RESTA BLOCCATI
+# =============================================================================
+_quota = {"chiamate": []}
+
+
+def _post_quota(url, **kw):
+    corpo = kw.get("json") or {}
+    contenuti = corpo.get("contents", [])
+    modello = url.split("/models/")[1].split(":")[0]
+    _quota["chiamate"].append(modello)
+    prompt = contenuti[0]["parts"][0]["text"] if contenuti else ""
+    if "OK." in prompt:
+        return FintaRisposta(200, {"candidates": [{"content": {"parts": [{"text": "OK"}]}, "finishReason": "STOP"}]})
+    if len(contenuti) == 3:            # continuazione
+        if modello == "gemini-3.7-pro":
+            return FintaRisposta(429, {}, "quota exhausted")
+        return FintaRisposta(200, {"candidates": [{"content": {"parts": [{"text": '"B","condition":"b","confidence":"HIGH"}],"complete":true}'}]},
+                                                  "finishReason": "STOP"}]})
+    # prima risposta: tagliata
+    return FintaRisposta(200, {"candidates": [{"content": {"parts": [{"text": '{"executive_summary":"S.","application_purpose":"P.","business_rules":[{"rule_name":"A","condition":"a","confidence":"HIGH"},{"rule_name":'}]},
+                                              "finishReason": "MAX_TOKENS"}]})
+
+
+model_chain.requests = types.SimpleNamespace(get=_get_due, post=_post_quota,
+                                             utils=__import__("requests").utils,
+                                             exceptions=__import__("requests").exceptions)
+src_q = [{"filename": "q.sql", "language": "SQL", "hash": "quota1", "content": "PROCEDURE Q IS BEGIN NULL; END;"}]
+ris_q, stati_q = app.analyze_legacy_application(src_q, app.extract_technical_metadata(src_q),
+                                                "Google Gemini", "k", "", None, "qualita",
+                                                ragionamento="low", usa_cache=False,
+                                                parallelismo=1)
+P("se il modello finisce la quota durante la continuazione automatica, l'esecuzione NON cade",
+  ris_q["_incompleti"] == [1] and stati_q[0]["continuazione_fallita"] == "quota")
+P("e non si cambia modello di nascosto: solo il primo è stato interpellato",
+  set(_quota["chiamate"]) == {"gemini-3.7-pro"})
+P("le righe già scritte restano leggibili intanto",
+  any(r["rule_name"] == "A" for r in ris_q["business_rules"]))
+
+catena_q = app.build_chain("Google Gemini", "k", None, "", "qualita", [], "low")
+prossimo = catena_q.successivo("gemini-3.7-pro")
+P(f"la catena sa qual è il modello dopo ({prossimo})", prossimo == "gemini-3.7-flash")
+stati_q[0] = app.continua_lotto(catena_q, stati_q[0], "low", modello=prossimo)
+P("su decisione della persona, il seguito passa al modello dopo e la risposta si chiude",
+  stati_q[0]["completo"] and stati_q[0]["modello"] == "gemini-3.7-flash"
+  and len([r for r in stati_q[0]["risultato"]["business_rules"]]) == 2)
+P("il documento dirà che quel lotto l'hanno finito due modelli diversi",
+  any("different model" in a for a in stati_q[0]["risultato"]["contract_warnings"]))
 
 print()
 print(f"{sum(ESITI)}/{len(ESITI)} casi passati")

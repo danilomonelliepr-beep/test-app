@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Converte GUIDA.md in un PDF impaginato.
+"""Converte la guida in un PDF impaginato, in tutte e due le lingue.
 
-    python guida_pdf.py [sorgente.md] [uscita.pdf]
+    python guida_pdf.py                      # GUIDA.md → GUIDA.pdf, GUIDE.md → GUIDE.pdf
+    python guida_pdf.py sorgente.md [uscita.pdf]
 
 Markdown → HTML (libreria `markdown`, con tabelle e blocchi di codice) → PDF
 (wkhtmltopdf). Il blocco Mermaid della guida non è disegnabile qui, quindi
@@ -52,6 +53,19 @@ blockquote { border-left: 3px solid #f6ad55; background: #fffaf0; margin: 8pt 0;
 """
 
 # Il diagramma della guida, in riquadri: stessa sequenza, nessun renderer.
+# Due versioni, scelte dal nome del file: GUIDA (italiano) o GUIDE (inglese).
+FLUSSO_EN = [
+    ("Uploaded files", "the customer's sources"),
+    ("Static analysis", "sqlglot + regular expressions — the facts"),
+    ("Prompt construction", "contract generated from CAMPI, non-repeatable fence"),
+    ("Batching", "~120,000 characters, never a file cut in half"),
+    ("Model chain", "discovery → probe (5 s / 10 s) → fallback"),
+    ("Return", "JSON extraction → repair → normalisation"),
+    ("Merge with the static facts", "same columns, same deduplication keys"),
+    ("Consolidation and diagrams", "only with several batches; drawings from the data"),
+    ("Expert validation", "editable tables, boxes to tick"),
+    ("Export", "PDF · Word · JSON"),
+]
 FLUSSO = [
     ("File caricati", "sorgenti del cliente"),
     ("Analisi statica", "sqlglot + espressioni regolari — i fatti"),
@@ -66,11 +80,12 @@ FLUSSO = [
 ]
 
 
-def blocco_flusso() -> str:
+def blocco_flusso(inglese: bool = False) -> str:
+    passi = FLUSSO_EN if inglese else FLUSSO
     pezzi = ['<div class="flusso">']
-    for i, (titolo, nota) in enumerate(FLUSSO):
+    for i, (titolo, nota) in enumerate(passi):
         pezzi.append(f'<div class="passo"><b>{html.escape(titolo)}</b> — {html.escape(nota)}</div>')
-        if i < len(FLUSSO) - 1:
+        if i < len(passi) - 1:
             pezzi.append('<div class="freccia">&#9660;</div>')
     pezzi.append("</div>")
     return "\n".join(pezzi)
@@ -81,7 +96,7 @@ def converti(sorgente: Path, uscita: Path) -> int:
     testo = re.sub(r"```mermaid.*?```", "@@FLUSSO@@", testo, flags=re.S)
     corpo = markdown.markdown(
         testo, extensions=["tables", "fenced_code", "sane_lists", "attr_list"])
-    corpo = corpo.replace("<p>@@FLUSSO@@</p>", blocco_flusso())
+    corpo = corpo.replace("<p>@@FLUSSO@@</p>", blocco_flusso(inglese="GUIDE" in sorgente.name.upper()))
     pagina = (f"<!doctype html><html><head><meta charset='utf-8'>"
               f"<style>{CSS}</style></head><body>{corpo}</body></html>")
     tmp = uscita.with_suffix(".html")
@@ -104,6 +119,13 @@ def converti(sorgente: Path, uscita: Path) -> int:
 
 
 if __name__ == "__main__":
-    sorg = Path(sys.argv[1] if len(sys.argv) > 1 else "GUIDA.md")
-    dest = Path(sys.argv[2] if len(sys.argv) > 2 else sorg.with_suffix(".pdf"))
-    raise SystemExit(converti(sorg, dest))
+    if len(sys.argv) > 1:
+        sorg = Path(sys.argv[1])
+        dest = Path(sys.argv[2] if len(sys.argv) > 2 else sorg.with_suffix(".pdf"))
+        raise SystemExit(converti(sorg, dest))
+    # senza argomenti: tutte e due le lingue
+    esito = 0
+    for nome in ("GUIDA.md", "GUIDE.md"):
+        if Path(nome).exists():
+            esito |= converti(Path(nome), Path(nome).with_suffix(".pdf"))
+    raise SystemExit(esito)

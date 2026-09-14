@@ -206,6 +206,29 @@ div.stButton > button[kind="primary"]:hover {
                  padding: 0.7rem 0.9rem; font-size: 0.86rem; color: var(--inchiostro-2);
                  margin: 0.4rem 0; }
 
+/* ═══ I CONTROLLI DI STREAMLIT ══════════════════════════════════════════
+   Cursori, caselle, interruttori e bordi di fuoco prendono il colore dal tema
+   di Streamlit, che è una configurazione esterna al codice. Qui gli stessi
+   colori vengono riapplicati via CSS, che viaggia dentro `ui.py`: comunque si
+   avvii l'applicazione — con `avvia.py` o con `streamlit run app.py` a mano —
+   l'accento è il nostro e non il rosso di serie, che litigherebbe con la scala
+   di gravità. */
+[data-testid="stSlider"] [data-baseweb="slider"] div[role="slider"] { background: var(--accento) !important; }
+[data-testid="stSlider"] [data-baseweb="slider"] > div > div > div:first-child { background: var(--accento) !important; }
+[data-testid="stCheckbox"] [data-baseweb="checkbox"] span[aria-hidden="true"],
+[data-baseweb="checkbox"] span[data-checked="true"] { background-color: var(--accento) !important;
+                                                      border-color: var(--accento) !important; }
+[data-baseweb="radio"] div[aria-checked="true"] { background-color: var(--accento) !important;
+                                                  border-color: var(--accento) !important; }
+[data-testid="stToggle"] [aria-checked="true"] { background: var(--accento) !important; }
+[data-baseweb="input"]:focus-within, [data-baseweb="select"]:focus-within,
+[data-baseweb="textarea"]:focus-within { border-color: var(--accento) !important;
+                                         box-shadow: 0 0 0 1px var(--accento) !important; }
+[data-testid="stProgress"] div[role="progressbar"] > div { background: var(--accento) !important; }
+[data-testid="stFileUploaderDropzone"] { border-color: var(--riga) !important;
+                                         background: var(--superficie) !important; }
+[data-testid="stSpinner"] i { border-top-color: var(--accento) !important; }
+
 /* ── rispetto delle preferenze di sistema ─────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important;
@@ -225,6 +248,19 @@ div.stButton > button[kind="primary"]:hover {
 
 def applica_tema() -> None:
     st.markdown(TEMA, unsafe_allow_html=True)
+
+
+def tema_configurato() -> bool:
+    """Dice se le impostazioni di Streamlit sono quelle nostre.
+
+    Le passa `avvia.py` come variabili d'ambiente. Non servono all'aspetto —
+    quello lo tiene su il CSS qui sopra — ma portano il limite di caricamento e
+    la barra degli strumenti ridotta, e sapere se mancano evita mezz'ora di
+    dubbi a chi lancia `streamlit run app.py` a mano."""
+    try:
+        return str(st.get_option("theme.primaryColor") or "").lower() == "#15616d"
+    except Exception:
+        return False
 
 
 # =============================================================================
@@ -349,8 +385,50 @@ def interruttore(etichetta: str, valore: bool = False, chiave: str = "", aiuto: 
     return st.checkbox(etichetta, value=valore, key=chiave, help=aiuto)
 
 
-def avviso_temporaneo(testo: str, icona: str = "✓") -> None:
-    if hasattr(st, "toast"):
-        st.toast(testo, icon=icona)
-    else:
-        st.success(f"{icona} {testo}")
+def lavoro_in_corso(etichetta: str):
+    """Un riquadro che dice cosa sta succedendo mentre il modello lavora.
+
+    `st.status` mostra una rotella che gira e si può aprire per leggere le
+    righe man mano che arrivano; sulle installazioni che non ce l'hanno si
+    ripiega su `st.spinner`, che la rotella ce l'ha comunque. Un'analisi vera
+    dura minuti: senza qualcosa che si muove, la pagina sembra bloccata e la
+    gente ricarica — buttando via il lavoro fatto fino a lì."""
+    if hasattr(st, "status"):
+        return st.status(etichetta, expanded=True)
+    return st.spinner(etichetta)
+
+
+def passo(contenitore, testo: str) -> None:
+    """Aggiorna l'etichetta del riquadro, se il riquadro sa farlo."""
+    try:
+        contenitore.update(label=testo)
+    except Exception:
+        pass
+
+
+def finito(contenitore, testo: str, riuscito: bool = True) -> None:
+    try:
+        contenitore.update(label=testo, state="complete" if riuscito else "error",
+                           expanded=False)
+    except Exception:
+        pass
+
+
+def avviso_temporaneo(testo: str) -> None:
+    """Un avviso che compare e sparisce.
+
+    Niente icona: `st.toast` valida l'icona come emoji vera, e un segno di
+    spunta tipografico (✓, U+2713) non lo è — Streamlit alza un'eccezione. Con
+    l'avviso in fondo al blocco dell'analisi, quell'eccezione veniva raccolta
+    dal `except` di sopra e compariva come «The analysis stopped», su
+    un'analisi che era invece finita bene e già salvata. Un avviso di cortesia
+    non deve poter far fallire tre minuti di lavoro: qui non ha più un'icona da
+    validare, e in più qualunque cosa vada storta nel mostrarlo viene
+    ignorata."""
+    try:
+        if hasattr(st, "toast"):
+            st.toast(testo)
+        else:
+            st.success(testo)
+    except Exception:
+        pass

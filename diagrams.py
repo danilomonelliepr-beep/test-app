@@ -90,7 +90,7 @@ def _et(testo: Any, massimo: int = MAX_ETICHETTA) -> str:
 
 def _coda(righe: List[str], scartati: int) -> List[str]:
     if scartati > 0:
-        righe.append(f'  n_altri["… e altri {scartati} non mostrati"]')
+        righe.append(f'  n_altri["… and {scartati} more not shown"]')
     return righe
 
 
@@ -119,10 +119,20 @@ def process_flow(r: Dict[str, Any]) -> str:
         if trigger:
             nt = idd("T_" + nome)
             righe.append(f'  {nt}["{_et(trigger)}"] --> {np}')
+        # I passi, se ci sono, si incatenano NELL'ORDINE in cui il modello li
+        # ha scritti: è l'unica cosa che sa lui e che dalle tabelle non si
+        # ricava, ed è il motivo per cui il suo disegno era migliore del
+        # nostro. Ora è un dato, quindi il disegno costruito qui lo sa.
+        passi = [x.strip() for x in _valore(p, "steps").split(";") if x.strip()]
+        precedente = np
+        for i, passo in enumerate(passi[:8], start=1):
+            corrente = idd(f"S_{nome}_{i}")
+            righe.append(f'  {precedente} --> {corrente}["{_et(passo, 38)}"]')
+            precedente = corrente
         esito = _valore(p, "outcome")
         if esito:
             ne = idd("O_" + nome)
-            righe.append(f'  {np} --> {ne}["{_et(esito)}"]')
+            righe.append(f'  {precedente} --> {ne}["{_et(esito)}"]')
         # I componenti coinvolti appesi al processo: sono il ponte fra il
         # linguaggio del business e i nomi che stanno nel codice.
         componenti = [c.strip() for c in _valore(p, "involved_components").split(";") if c.strip()]
@@ -136,7 +146,7 @@ def process_flow(r: Dict[str, Any]) -> str:
 # =============================================================================
 def application_map(r: Dict[str, Any]) -> str:
     idd = _fabbrica_id()
-    righe = ["flowchart LR", '  n_app["Questa applicazione"]']
+    righe = ["flowchart LR", '  n_app["This application"]']
     visti = set()
     scritti = 0
     for m in r.get("application_mapping", []):
@@ -148,7 +158,7 @@ def application_map(r: Dict[str, Any]) -> str:
         if chiave not in visti:
             righe.append(f'  {ne}["{_et(esterno)}"]')
             visti.add(chiave)
-        etichetta = _et(_valore(m, "integration_type") or "collegamento", 22)
+        etichetta = _et(_valore(m, "integration_type") or "link", 22)
         direzione = _valore(m, "direction").upper()
         if direzione == "INBOUND":
             righe.append(f"  {ne} -->|{etichetta}| n_app")
@@ -189,7 +199,7 @@ def data_flow(r: Dict[str, Any]) -> str:
         sorgente, destinazione = _valore(f, "source"), _valore(f, "target")
         if not sorgente or not destinazione:
             continue
-        dato = _et(_valore(f, "data_description", "transformation") or "dato", 26)
+        dato = _et(_valore(f, "data_description", "transformation") or "data", 26)
         righe.append(f'  {idd("F_" + sorgente)}["{_et(sorgente, 30)}"] -->|{dato}| '
                      f'{idd("F_" + destinazione)}["{_et(destinazione, 30)}"]')
         scritti += 1
@@ -203,8 +213,8 @@ def data_flow(r: Dict[str, Any]) -> str:
     if not oggetti:
         return ""
     for o in oggetti[:MAX_ARCHI]:
-        file_sorgente = _valore(o, "source_file") or "codice"
-        operazione = _et(_valore(o, "operation") or "USA", 14)
+        file_sorgente = _valore(o, "source_file") or "code"
+        operazione = _et(_valore(o, "operation") or "USES", 14)
         righe.append(f'  {idd("D_" + file_sorgente)}["{_et(file_sorgente, 30)}"] -->|{operazione}| '
                      f'{idd("D_" + _valore(o, "object_name"))}["{_et(_valore(o, "object_name"), 30)}"]')
     return "\n".join(_coda(righe, max(0, len(oggetti) - MAX_ARCHI)))

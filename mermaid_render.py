@@ -19,7 +19,9 @@ immagine, dallo stesso motore. Qui si prova, nell'ordine:
      proibito. Serve a far girare l'app anche dove Node non c'è.
 
 ── COSA INSTALLARE ───────────────────────────────────────────────────────
-    npm install -g @mermaid-js/mermaid-cli        # porta con sé un Chromium
+    python avvia.py                               # fa tutto da solo, oppure:
+    npm install @mermaid-js/mermaid-cli           # accanto al progetto
+    node node_modules/puppeteer/install.mjs       # il browser, nella versione giusta
 
 Dentro un container servono `--no-sandbox` (ci pensa questo file, con un file
 di configurazione temporaneo) e a volte le librerie di sistema di Chrome. Se
@@ -73,15 +75,44 @@ def _config_puppeteer(cartella: Path) -> Path:
     return f
 
 
+# ═══ LE ETICHETTE CHE ESCONO DALLE CASELLE ═════════════════════════════════
+# Con `htmlLabels: true` Mermaid disegna il testo dei nodi dentro un
+# `foreignObject`, cioè HTML vero dentro l'SVG. Il riquadro però lo dimensiona
+# PRIMA, misurando il testo con il carattere che crede di avere. In un browser
+# headless quel carattere spesso non c'è: si misura con uno, si disegna con un
+# altro, e il testo esce dalla casella o ci si sovrappone — è il difetto che si
+# vedeva nei PDF, con le etichette su due righe dentro riquadri alti una riga.
+#
+# Con `htmlLabels: false` il testo è un `<text>` SVG normale: Mermaid lo misura
+# con lo stesso motore con cui lo disegna, e la casella viene della misura
+# giusta. Si perde la formattazione HTML nelle etichette, che non usiamo.
+CONFIG_MERMAID = {
+    "theme": os.environ.get("MERMAID_THEME", "neutral"),
+    "htmlLabels": False,
+    "fontFamily": "Arial, Helvetica, sans-serif",   # presente ovunque
+    "flowchart": {"useMaxWidth": False, "htmlLabels": False,
+                  "wrappingWidth": 220, "padding": 10, "nodeSpacing": 45,
+                  "rankSpacing": 55, "curve": "basis"},
+    "sequence": {"useMaxWidth": False},
+    "er": {"useMaxWidth": False},
+    "maxTextSize": 200000,   # una mappa applicativa vera supera il default
+    "maxEdges": 2000,
+}
+
+# La stessa configurazione, scritta DENTRO il diagramma. Serve per il servizio
+# esterno, che riceve solo il codice e del nostro file di configurazione non sa
+# niente — ed è il motivo per cui i diagrammi disegnati da `mermaid.ink`
+# uscivano col tema di serie e le etichette fuori posto. Scritta così viaggia
+# col diagramma: vale in locale, vale sul servizio, e vale anche se qualcuno
+# incolla il codice su mermaid.live.
+def _direttiva() -> str:
+    dentro = {k: CONFIG_MERMAID[k] for k in ("theme", "htmlLabels", "fontFamily", "flowchart")}
+    return "%%{init: " + json.dumps(dentro, separators=(",", ":")) + "}%%"
+
+
 def _config_mermaid(cartella: Path) -> Path:
     f = cartella / "mermaid.json"
-    f.write_text(json.dumps({
-        "theme": os.environ.get("MERMAID_THEME", "neutral"),
-        "flowchart": {"useMaxWidth": False, "htmlLabels": True},
-        "sequence": {"useMaxWidth": False},
-        "maxTextSize": 200000,   # una mappa applicativa vera supera il default
-        "maxEdges": 2000,
-    }), "utf-8")
+    f.write_text(json.dumps(CONFIG_MERMAID), "utf-8")
     return f
 
 
@@ -89,6 +120,13 @@ def _comando_locale() -> Optional[list]:
     esplicito = os.environ.get("MERMAID_CLI", "").strip()
     if esplicito and Path(esplicito).exists():
         return [esplicito]
+    # Installato accanto al progetto (`npm install @mermaid-js/mermaid-cli`,
+    # senza -g): non serve essere amministratori, ed è la via che prova per
+    # prima `avvia.py` quando l'installazione globale non passa.
+    for nome in ("mmdc", "mmdc.cmd"):
+        locale = Path(__file__).parent / "node_modules" / ".bin" / nome
+        if locale.exists():
+            return [str(locale)]
     trovato = shutil.which("mmdc")
     if trovato:
         return [trovato]
@@ -104,6 +142,27 @@ def disponibile() -> Tuple[bool, str]:
     if not cmd:
         return False, "mmdc non trovato (npm install -g @mermaid-js/mermaid-cli)"
     return True, " ".join(cmd)
+
+
+def prova_locale() -> bool:
+    """Disegna davvero un diagramma da due nodi, senza ricadute sulla rete.
+
+    Non basta che `mmdc` esista: si porta dietro un browser che può non essere
+    stato scaricato, e in quel caso il comando c'è e non disegna. Era il caso
+    che passava inosservato fino a un'esportazione. Il risultato finisce nella
+    cache, quindi chiamarla più volte non costa niente."""
+    if not _comando_locale():
+        return False
+    prima = os.environ.get("MERMAID_LOCAL_ONLY")
+    os.environ["MERMAID_LOCAL_ONLY"] = "1"
+    try:
+        return bool(rendi('flowchart TD\n  n_a["A"] --> n_b["B"]', "prova"))
+    except Exception:
+        return False
+    finally:
+        os.environ.pop("MERMAID_LOCAL_ONLY", None)
+        if prima:
+            os.environ["MERMAID_LOCAL_ONLY"] = prima
 
 
 def _rendi_locale(codice: str, titolo: str) -> Optional[bytes]:
@@ -176,6 +235,11 @@ def rendi(codice: str, titolo: str = "Diagram") -> Optional[bytes]:
     pulito = pulisci(codice)
     if not pulito:
         return None
+    # La direttiva va in testa, prima dell'intestazione del diagramma, e solo
+    # se non c'è già una direttiva scritta da qualcun altro: quella di chi ha
+    # scritto il diagramma vince sulla nostra.
+    if "%%{init" not in pulito:
+        pulito = _direttiva() + "\n" + pulito
     impronta = hashlib.sha256(pulito.encode("utf-8")).hexdigest()
     if impronta in _CACHE:
         return _CACHE[impronta]

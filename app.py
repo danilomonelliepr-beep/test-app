@@ -1,7 +1,12 @@
+import ast
+import builtins
 import hashlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 import re
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -32,11 +37,52 @@ ui.applica_tema()
 # =============================================================================
 # 2. CONSTANTS
 # =============================================================================
-SUPPORTED_EXTENSIONS = [
-    "sql", "pks", "pkb", "pls", "plsql", "java", "py", "js", "ts",
-    "cs", "c", "cpp", "h", "hpp", "cbl", "cob", "rpg", "rpgle",
-    "cl", "xml", "json", "yaml", "yml", "txt"
-]
+# Estensione → linguaggio. Serve a DIRE al modello cosa sta leggendo e a
+# scegliere il parser giusto; NON serve a rifiutare file. Un estrattore per il
+# legacy non può sapere in anticipo cosa gli arriverà — il primo .vb caricato
+# da un collega veniva respinto dal caricatore, e non c'era niente di rotto
+# nell'analisi, solo un elenco troppo corto. Ora qualunque file di testo entra;
+# se l'estensione non è qui, il linguaggio è «Unknown» e il modello la
+# riconoscerà dal contenuto, che è quello che sa fare meglio.
+LINGUAGGI = {
+    # SQL e dialetti procedurali
+    ".sql": "SQL", ".pks": "Oracle PL/SQL Package Specification",
+    ".pkb": "Oracle PL/SQL Package Body", ".pls": "Oracle PL/SQL", ".plsql": "Oracle PL/SQL",
+    ".prc": "Oracle PL/SQL Procedure", ".fnc": "Oracle PL/SQL Function",
+    ".trg": "Oracle PL/SQL Trigger", ".pck": "Oracle PL/SQL Package",
+    ".spc": "Oracle PL/SQL Package Specification", ".bdy": "Oracle PL/SQL Package Body",
+    ".vw": "SQL View", ".tps": "Oracle Type Specification", ".tpb": "Oracle Type Body",
+    ".tsql": "Transact-SQL", ".psql": "PostgreSQL", ".ddl": "SQL DDL",
+    # Visual Basic, in tutte le sue vite
+    ".vb": "VB.NET", ".bas": "Visual Basic 6 Module", ".frm": "Visual Basic 6 Form",
+    ".cls": "Visual Basic 6 Class", ".ctl": "Visual Basic 6 Control",
+    ".vbs": "VBScript", ".asp": "Classic ASP", ".aspx": "ASP.NET Page", ".ascx": "ASP.NET Control",
+    # Mainframe e IBM i
+    ".cbl": "COBOL", ".cob": "COBOL", ".cpy": "COBOL Copybook", ".jcl": "JCL",
+    ".pli": "PL/I", ".pl1": "PL/I", ".asm": "Assembler",
+    ".rpg": "RPG", ".rpgle": "RPGLE", ".sqlrpgle": "RPGLE with embedded SQL",
+    ".cl": "IBM i Control Language", ".clle": "IBM i Control Language", ".clp": "IBM i Control Language",
+    ".dds": "IBM i DDS", ".pf": "IBM i Physical File (DDS)", ".lf": "IBM i Logical File (DDS)",
+    ".dspf": "IBM i Display File (DDS)", ".prtf": "IBM i Printer File (DDS)",
+    # linguaggi generali
+    ".java": "Java", ".kt": "Kotlin", ".scala": "Scala", ".groovy": "Groovy",
+    ".py": "Python", ".js": "JavaScript", ".ts": "TypeScript", ".jsx": "JavaScript (React)",
+    ".tsx": "TypeScript (React)", ".cs": "C#", ".c": "C", ".cpp": "C++", ".cc": "C++",
+    ".h": "C/C++ Header", ".hpp": "C++ Header", ".go": "Go", ".rs": "Rust",
+    ".php": "PHP", ".rb": "Ruby", ".pl": "Perl", ".pm": "Perl Module",
+    ".pas": "Pascal/Delphi", ".dpr": "Delphi Project", ".dfm": "Delphi Form",
+    ".abap": "ABAP", ".4gl": "Informix 4GL", ".p": "Progress ABL", ".w": "Progress ABL Window",
+    ".i": "Progress ABL Include", ".sru": "PowerBuilder Object", ".srw": "PowerBuilder Window",
+    ".srd": "PowerBuilder DataWindow",
+    # script e configurazione
+    ".sh": "Shell", ".ksh": "Korn Shell", ".bash": "Bash", ".bat": "Windows Batch",
+    ".cmd": "Windows Batch", ".ps1": "PowerShell",
+    ".xml": "XML", ".json": "JSON", ".yaml": "YAML", ".yml": "YAML",
+    ".properties": "Properties", ".ini": "INI", ".cfg": "Configuration", ".conf": "Configuration",
+    ".txt": "Text or Unknown",
+}
+# Ancora usata per il messaggio d'aiuto; il caricatore non filtra più.
+SUPPORTED_EXTENSIONS = sorted(e.lstrip(".") for e in LINGUAGGI)
 
 MAX_FILE_SIZE_BYTES = 2 * 1024 * 1024
 MAX_TOTAL_SOURCE_CHARS = 1_500_000      # con l'analisi a lotti il tetto di una
@@ -92,18 +138,13 @@ def normalize_identifier(value):
     return value
 
 def detect_language_from_filename(filename):
-    extension = Path(filename).suffix.lower()
-    language_map = {
-        ".sql": "SQL", ".pks": "Oracle PL/SQL Package Specification",
-        ".pkb": "Oracle PL/SQL Package Body", ".pls": "Oracle PL/SQL",
-        ".plsql": "Oracle PL/SQL", ".java": "Java", ".py": "Python",
-        ".js": "JavaScript", ".ts": "TypeScript", ".cs": "C#",
-        ".c": "C", ".cpp": "C++", ".h": "C/C++ Header", ".hpp": "C++ Header",
-        ".cbl": "COBOL", ".cob": "COBOL", ".rpg": "RPG", ".rpgle": "RPGLE",
-        ".cl": "IBM i Control Language", ".xml": "XML", ".json": "JSON",
-        ".yaml": "YAML", ".yml": "YAML", ".txt": "Text or Unknown"
-    }
-    return language_map.get(extension, "Unknown")
+    estensione = Path(filename).suffix.lower()
+    if estensione in LINGUAGGI:
+        return LINGUAGGI[estensione]
+    # Non si rifiuta e non si finge: si scrive che non si sa. Il modello vede
+    # il contenuto e capisce da solo — è la cosa che gli riesce meglio.
+    return f"Unknown ({estensione or 'no extension'})"
+
 
 def source_hash(filename, content):
     payload = f"{filename}\n{content}".encode("utf-8", errors="ignore")
@@ -116,6 +157,12 @@ def decode_uploaded_file(uploaded_file):
     raw_content = uploaded_file.getvalue()
     if len(raw_content) > MAX_FILE_SIZE_BYTES:
         raise ValueError(f"{uploaded_file.name} exceeds the allowed size.")
+    # Il caricatore accetta tutto, quindi il controllo che sia TESTO sta qui:
+    # un byte nullo nei primi 8 KB vuol dire un binario (.dll, .fmb, .pbl…),
+    # e un binario decodificato a forza sarebbe spazzatura mandata al modello.
+    if b"\x00" in raw_content[:8000]:
+        raise ValueError(f"{uploaded_file.name} looks like a binary file, not source code. "
+                         "Export the source as text first (for example .fmb → .fmt, .pbl → .sr*).")
 
     encodings = ["utf-8", "utf-8-sig", "cp1252", "latin-1"]
     for encoding in encodings:
@@ -154,28 +201,108 @@ def build_source_collection(uploaded_files, pasted_code, pasted_filename):
 
     return sources
 
-def split_into_batches(sources, chars_per_batch=CHARS_PER_LOTTO):
+def _gruppi_collegati(sources, metadata):
+    """I file che si parlano fra loro, messi insieme.
+
+    Il grafo delle dipendenze ce l'ha già il parser: si usa per capire quali
+    file vanno letti insieme. Due file che si chiamano a vicenda finiti in
+    lotti diversi non li vede insieme nessuno, e il loro collegamento resta un
+    buco — al consolidamento arriva solo l'inventario, e da lì si può
+    indovinare, non vedere."""
+    nomi = [s["filename"] for s in sources]
+    posizione = {n: i for i, n in enumerate(nomi)}
+    padre = list(range(len(nomi)))
+
+    def radice(i):
+        while padre[i] != i:
+            padre[i] = padre[padre[i]]
+            i = padre[i]
+        return i
+
+    def unisci(a, b):
+        ra, rb = radice(a), radice(b)
+        if ra != rb:
+            padre[rb] = ra
+
+    # dove è dichiarato ogni componente: serve per risalire dal bersaglio di
+    # una chiamata al file che lo contiene
+    dove = {}
+    for componente in metadata.get("components", []):
+        nome = str(componente.get("component_name", "")).strip().lower()
+        file_dichiarante = componente.get("source_file")
+        if nome and file_dichiarante in posizione:
+            dove.setdefault(nome, file_dichiarante)
+    base = {Path(n).stem.lower(): n for n in nomi}
+
+    for dipendenza in metadata.get("dependencies", []):
+        partenza = dipendenza.get("source")
+        if partenza not in posizione:
+            continue
+        bersaglio = str(dipendenza.get("target", "")).strip().lower()
+        corto = bersaglio.rsplit(".", 1)[-1]
+        arrivo = (dove.get(bersaglio) or dove.get(corto)
+                  or base.get(bersaglio) or base.get(corto))
+        if arrivo and arrivo != partenza:
+            unisci(posizione[partenza], posizione[arrivo])
+
+    gruppi = {}
+    for i, nome in enumerate(nomi):
+        gruppi.setdefault(radice(i), []).append(sources[i])
+    return list(gruppi.values())
+
+
+def split_into_batches(sources, chars_per_batch=CHARS_PER_LOTTO, metadata=None):
     """L'analisi a lotti.
 
-    Prima l'app mandava tutto in una chiamata sola: oltre una certa dimensione
-    il modello troncava la risposta a metà e l'analisi andava persa senza che
-    nessuno lo dicesse. Ora il sorgente si divide in lotti che stanno in una
-    chiamata, ogni lotto è un'analisi completa, e i risultati si uniscono sulle
-    stesse chiavi con cui si tolgono i doppioni.
-    I file NON si spezzano mai a metà: un file tagliato dà regole di business
-    monche, che è peggio di un file in meno.
+    Oltre una certa dimensione il modello troncherebbe la risposta a metà e
+    l'analisi andrebbe persa senza che nessuno lo dica. Il sorgente si divide
+    quindi in lotti che stanno in una chiamata, ogni lotto è un'analisi
+    completa, e i risultati si uniscono sulle stesse chiavi con cui si tolgono
+    i doppioni.
+
+    Due regole nella divisione:
+    · I file NON si spezzano mai a metà: un file tagliato dà regole di business
+      monche, che è peggio di un file in meno.
+    · I file che si chiamano fra loro stanno nello stesso lotto, quando ci
+      stanno. Prima si divideva per sola dimensione, quindi due file legati
+      finivano separati per puro ordine alfabetico e il loro legame non lo
+      vedeva nessuno.
     """
+    if metadata:
+        gruppi = _gruppi_collegati(sources, metadata)
+    else:
+        gruppi = [[s] for s in sources]
+    # i gruppi più grossi per primi: riempiono i lotti, i piccoli chiudono i buchi
+    gruppi.sort(key=lambda g: -sum(len(s["content"]) for s in g))
+
     batches, corrente, quanti = [], [], 0
-    for s in sorted(sources, key=lambda x: -len(x["content"])):
-        peso = len(s["content"])
+    for gruppo in gruppi:
+        peso = sum(len(s["content"]) for s in gruppo)
+        if peso > chars_per_batch:
+            # Un gruppo più grande di un lotto va spezzato per forza: si chiude
+            # quello che c'è e si dividono i suoi file per dimensione.
+            if corrente:
+                batches.append(corrente)
+                corrente, quanti = [], 0
+            interno, dentro = [], 0
+            for file_singolo in sorted(gruppo, key=lambda x: -len(x["content"])):
+                if interno and dentro + len(file_singolo["content"]) > chars_per_batch:
+                    batches.append(interno)
+                    interno, dentro = [], 0
+                interno.append(file_singolo)
+                dentro += len(file_singolo["content"])
+            if interno:
+                batches.append(interno)
+            continue
         if corrente and quanti + peso > chars_per_batch:
             batches.append(corrente)
             corrente, quanti = [], 0
-        corrente.append(s)
+        corrente.extend(gruppo)
         quanti += peso
     if corrente:
         batches.append(corrente)
     return batches
+
 
 # =============================================================================
 # 5. SQL PARSING
@@ -234,24 +361,57 @@ def extract_sql_metadata(code, filename):
 # =============================================================================
 # 6. STATIC SOURCE ANALYSIS
 # =============================================================================
-def extract_functions_and_procedures(code, filename):
+def _vale_per(lingua, famiglie):
+    """Un pattern vale per un file se il linguaggio del file è in una delle
+    famiglie indicate, oppure se il linguaggio è ignoto (allora si prova
+    tutto, che è meglio di niente). `None` = vale sempre.
+
+    Prima ogni pattern girava su ogni file: la stessa funzione VB usciva
+    quattro volte con quattro etichette (FUNCTION, JAVA_METHOD,
+    JAVASCRIPT_FUNCTION, VB_FUNCTION), e «End Function» seguito da «Public»
+    fabbricava una funzione fantasma di nome Public."""
+    if famiglie is None:
+        return True
+    basso = str(lingua or "").lower()
+    if "unknown" in basso or "text" in basso:
+        return True
+    return any(f in basso for f in famiglie)
+
+
+SQLISH = ("sql", "pl/", "oracle", "postgres", "transact")
+VBISH = ("vb", "visual basic", "asp")
+JAVAISH = ("java", "c#", "kotlin", "scala", "groovy")
+JSISH = ("javascript", "typescript", "php")
+
+
+def extract_functions_and_procedures(code, filename, language=""):
+    # `[ \t]+` e non `\s+` dopo la parola chiave: `\s+` attraversa gli a capo,
+    # e «End Function» seguito da una riga che comincia con «Public» diventava
+    # una funzione chiamata Public.
     patterns = [
-        ("PROCEDURE", r"\bPROCEDURE\s+([A-Z_][A-Z0-9_$#.]*)"),
-        ("FUNCTION", r"\bFUNCTION\s+([A-Z_][A-Z0-9_$#.]*)"),
-        ("PACKAGE", r"\bPACKAGE(?:\s+BODY)?\s+([A-Z_][A-Z0-9_$#.]*)"),
-        # Il pattern originale aveva `\s` fra le alternative dei modificatori:
-        # bastava uno spazio per farlo scattare, quindi in un PL/SQL o in un
-        # COBOL «BEGIN CALC_SCONTO(x)» registrava CALC_SCONTO come metodo Java.
-        # Componenti fantasma nelle tabelle, e — peggio — nell'indice usato per
-        # risolvere le chiamate, dove facevano sparire le dipendenze vere.
-        ("JAVA_METHOD", r"\b(?:public|private|protected)\s+(?:(?:static|final|synchronized|abstract|native)\s+)*[\w<>\[\],?]+(?:\s*\[\s*\])?\s+([A-Za-z_]\w*)\s*\("),
-        ("PYTHON_FUNCTION", r"(?m)^\s*def\s+([A-Za-z_]\w*)\s*\("),
-        ("JAVASCRIPT_FUNCTION", r"\bfunction\s+([A-Za-z_$][\w$]*)\s*\("),
-        ("COBOL_PARAGRAPH", r"(?m)^\s*([A-Z0-9][A-Z0-9-]+)\.\s*$")
+        ("PROCEDURE", r"\bPROCEDURE[ \t]+([A-Z_][A-Z0-9_$#.]*)", SQLISH + ("pascal", "delphi", "ada")),
+        ("FUNCTION", r"\bFUNCTION[ \t]+([A-Z_][A-Z0-9_$#.]*)", SQLISH + ("pascal", "delphi", "ada")),
+        ("PACKAGE", r"\bPACKAGE(?:[ \t]+BODY)?[ \t]+([A-Z_][A-Z0-9_$#.]*)", SQLISH),
+        ("JAVA_METHOD", r"\b(?:public|private|protected)\s+(?:(?:static|final|synchronized|abstract|native)\s+)*[\w<>\[\],?]+(?:\s*\[\s*\])?\s+([A-Za-z_]\w*)\s*\(", JAVAISH),
+        ("PYTHON_FUNCTION", r"(?m)^\s*def\s+([A-Za-z_]\w*)\s*\(", ("python",)),
+        ("JAVASCRIPT_FUNCTION", r"\bfunction\s+([A-Za-z_$][\w$]*)\s*\(", JSISH),
+        ("COBOL_PARAGRAPH", r"(?m)^\s*([A-Z0-9][A-Z0-9-]+)\.\s*$", ("cobol",)),
+        ("VB_PROCEDURE", r"(?m)^[ \t]*(?:(?:Public|Private|Friend|Protected|Shared|Overrides|Static)[ \t]+)*Sub[ \t]+([A-Za-z_]\w*)", VBISH),
+        ("VB_FUNCTION", r"(?m)^[ \t]*(?:(?:Public|Private|Friend|Protected|Shared|Overrides|Static)[ \t]+)*Function[ \t]+([A-Za-z_]\w*)", VBISH),
+        ("VB_PROPERTY", r"(?m)^[ \t]*(?:(?:Public|Private|Friend|Protected|Shared)[ \t]+)*Property[ \t]+(?:Get[ \t]+|Let[ \t]+|Set[ \t]+)?([A-Za-z_]\w*)", VBISH),
+        ("VB_CLASS", r"(?m)^[ \t]*(?:(?:Public|Private|Friend|Partial)[ \t]+)*(?:Class|Module)[ \t]+([A-Za-z_]\w*)", VBISH),
+        ("PERL_SUB", r"(?m)^\s*sub\s+([A-Za-z_]\w*)", ("perl",)),
+        ("JCL_STEP", r"(?m)^//([A-Z0-9@#$]{1,8})\s+EXEC\s", ("jcl",)),
     ]
     components = []
-    for component_type, pattern in patterns:
-        for match in re.findall(pattern, code, flags=re.IGNORECASE)[:MAX_RIGHE_PER_TIPO]:
+    for component_type, pattern, famiglie in patterns:
+        if not _vale_per(language, famiglie):
+            continue
+        # I pattern VB distinguono le maiuscole di proposito: `Sub`, `Function`
+        # e `Property` in VB sono sempre così, e senza distinzione `function`
+        # dentro un commento o una stringa diventerebbe un componente.
+        flags = 0 if component_type.startswith("VB_") else re.IGNORECASE
+        for match in re.findall(pattern, code, flags=flags)[:MAX_RIGHE_PER_TIPO]:
             components.append({
                 "component_name": normalize_identifier(match),
                 "component_type": component_type,
@@ -262,19 +422,27 @@ def extract_functions_and_procedures(code, filename):
             })
     return unique_dicts(components, ["component_name", "component_type", "source_file"])
 
-def extract_imports_and_includes(code, filename):
+def extract_imports_and_includes(code, filename, language=""):
     patterns = [
-        ("PYTHON_IMPORT", r"(?m)^\s*import\s+([A-Za-z0-9_., ]+)"),
-        ("PYTHON_FROM_IMPORT", r"(?m)^\s*from\s+([A-Za-z0-9_.]+)\s+import"),
-        ("JAVA_IMPORT", r"(?m)^\s*import\s+([A-Za-z0-9_.]+)\s*;"),
-        ("JAVASCRIPT_IMPORT", r"""from\s+["']([^"']+)["']"""),
-        ("REQUIRE", r"""require\s*\(\s*["']([^"']+)["']\s*\)"""),
-        ("C_INCLUDE", r"""#include\s*[<"]([^>"]+)[>"]"""),
-        ("COBOL_COPY", r"\bCOPY\s+([A-Z0-9_-]+)"),
-        ("RPG_COPY", r"/COPY\s+([A-Z0-9_./-]+)")
+        ("PYTHON_IMPORT", r"(?m)^\s*import\s+([A-Za-z0-9_., ]+)", ("python",)),
+        ("PYTHON_FROM_IMPORT", r"(?m)^\s*from\s+([A-Za-z0-9_.]+)\s+import", ("python",)),
+        ("JAVA_IMPORT", r"(?m)^\s*import\s+([A-Za-z0-9_.]+)\s*;", JAVAISH),
+        ("JAVASCRIPT_IMPORT", r"""from\s+["']([^"']+)["']""", JSISH),
+        ("REQUIRE", r"""require\s*\(\s*["']([^"']+)["']\s*\)""", JSISH + ("ruby", "perl")),
+        ("C_INCLUDE", r"""#include\s*[<"]([^>"]+)[>"]""", ("c", "c++", "header")),
+        ("COBOL_COPY", r"\bCOPY\s+([A-Z0-9_-]+)", ("cobol",)),
+        ("RPG_COPY", r"/COPY\s+([A-Z0-9_./-]+)", ("rpg",)),
+        ("VB_IMPORTS", r"(?m)^\s*Imports\s+([A-Za-z_][\w.]*)", VBISH),
+        ("VB_REFERENCE", r"(?m)^\s*Reference\s*=.*?#([^#\r\n]+)#", VBISH),
+        ("PHP_INCLUDE", r"""\b(?:require|include)(?:_once)?\s*\(?\s*["']([^"']+)["']""", ("php",)),
+        ("PASCAL_USES", r"(?im)^\s*uses\s+([A-Za-z_][\w., \r\n]*?);", ("pascal", "delphi")),
+        ("JCL_EXEC_PGM", r"\bEXEC\s+PGM=([A-Z0-9@#$]{1,8})", ("jcl",)),
+        ("JCL_EXEC_PROC", r"\bEXEC\s+(?:PROC=)?([A-Z0-9@#$]{1,8})(?:\s|,|$)", ("jcl",)),
     ]
     dependencies = []
-    for dep_type, pattern in patterns:
+    for dep_type, pattern, famiglie in patterns:
+        if not _vale_per(language, famiglie):
+            continue
         for match in re.findall(pattern, code, flags=re.IGNORECASE)[:MAX_RIGHE_PER_TIPO]:
             dependencies.append({
                 "source": filename, "target": normalize_identifier(match),
@@ -282,7 +450,7 @@ def extract_imports_and_includes(code, filename):
             })
     return unique_dicts(dependencies, ["source", "target", "dependency_type"])
 
-def extract_probable_calls(code, filename, components):
+def extract_probable_calls(code, filename, components, generico=True, certi=None):
     declarations = {comp.get("component_name", "").lower() for comp in components}
     # La lista di esclusione prima teneva fuori una ventina di parole. Il quarto
     # pattern («qualsiasi identificatore seguito da parentesi») cattura ogni
@@ -304,8 +472,7 @@ def extract_probable_calls(code, filename, components):
         (r"\bCALL\s+([A-Z_][A-Z0-9_$#.]*)", "HIGH"),
         (r"\bEXEC(?:UTE)?\s+([A-Z_][A-Z0-9_$#.]*)", "HIGH"),
         (r"\bPERFORM\s+([A-Z0-9-]+)", "HIGH"),
-        (r"\b([A-Za-z_][A-Za-z0-9_$.]*)\s*\(", "MEDIUM")
-    ]
+    ] + ([(r"\b([A-Za-z_][A-Za-z0-9_$.]*)\s*\(", "MEDIUM")] if generico else [])
     dependencies = []
     for pattern, confidence in patterns:
         trovati = 0
@@ -322,14 +489,89 @@ def extract_probable_calls(code, filename, components):
             if (not basso or basso in excluded or basso in declarations
                     or basso in LIBRERIE_NOTE or len(basso) < 3):
                 continue
-            dependencies.append({
-                "source": filename, "target": norm_match, "dependency_type": "PROBABLE_CALL",
-                "evidence": "Static call-pattern detection", "confidence": confidence
-            })
+            # Se l'albero sintattico ha visto quello stesso nome, non è più un
+            # sospetto: è una chiamata, e la riga esce a confidenza alta senza
+            # che nessuno debba controllarla a mano.
+            if certi and basso.rsplit(".", 1)[-1] in certi:
+                dependencies.append({
+                    "source": filename, "target": norm_match, "dependency_type": "CALL",
+                    "evidence": "Call pattern confirmed by the parser's syntax tree",
+                    "confidence": "HIGH"})
+            else:
+                dependencies.append({
+                    "source": filename, "target": norm_match, "dependency_type": "PROBABLE_CALL",
+                    "evidence": "Static call-pattern detection", "confidence": confidence
+                })
             trovati += 1
             if trovati >= MAX_RIGHE_PER_TIPO:
                 break
     return unique_dicts(dependencies, ["source", "target", "dependency_type"])
+
+def _nome_chiamato(nodo):
+    """Il nome di ciò che viene chiamato: `f()` → f, `mod.f()` → mod.f."""
+    if isinstance(nodo, ast.Name):
+        return nodo.id
+    if isinstance(nodo, ast.Attribute):
+        base = _nome_chiamato(nodo.value)
+        return f"{base}.{nodo.attr}" if base else nodo.attr
+    return ""
+
+
+_BUILTIN = {n.lower() for n in dir(builtins)}
+
+
+def extract_calls_python(code, filename):
+    """Le chiamate di un file Python, dall'albero sintattico.
+
+    Torna `None` se il file non si lascia leggere: in quel caso chi chiama
+    ricade sull'espressione regolare, che indovina ma non si arrende.
+
+    Perché vale la pena: l'espressione regolare «identificatore seguito da
+    parentesi» non distingue una chiamata da un cast, da un costruttore o da
+    una parentesi qualsiasi, e produce righe a confidenza MEDIA che poi vanno
+    tutte controllate a mano. L'albero sa che quello È un nodo Call: la riga
+    esce a confidenza ALTA e nessuno deve verificarla."""
+    try:
+        albero = ast.parse(code)
+    except (SyntaxError, ValueError, RecursionError):
+        return None
+    definiti = {n.name.lower() for n in ast.walk(albero)
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
+    dipendenze = []
+    for nodo in ast.walk(albero):
+        if not isinstance(nodo, ast.Call):
+            continue
+        nome = normalize_identifier(_nome_chiamato(nodo.func))
+        corto = nome.rsplit(".", 1)[-1].lower()
+        if not nome or corto in definiti or corto in _BUILTIN or corto in LIBRERIE_NOTE:
+            continue
+        dipendenze.append({
+            "source": filename, "target": nome, "dependency_type": "CALL",
+            "evidence": f"Python AST, line {getattr(nodo, 'lineno', '?')}",
+            "confidence": "HIGH"})
+    return unique_dicts(dipendenze, ["source", "target", "dependency_type"])
+
+
+def nomi_chiamati_sql(code):
+    """I nomi che l'albero di sqlglot riconosce come chiamate a qualcosa di non
+    standard — cioè, quasi sempre, procedure scritte in casa.
+
+    Non si usa al posto dell'espressione regolare ma per CONFERMARLA. Su un
+    package PL/SQL vero sqlglot non arriva in fondo: le parti che non capisce
+    diventano un nodo `Command` e quello che c'è dentro sparisce dall'albero.
+    Usarlo come unica fonte farebbe perdere chiamate che l'espressione regolare
+    vedeva benissimo — un passo indietro travestito da passo avanti.
+
+    Le funzioni di libreria (SUBSTR, NVL, TO_DATE) hanno un nodo proprio e
+    restano fuori da sole, senza bisogno di elencarle."""
+    nomi = set()
+    for espressione in parse_sql_expressions(code):
+        for chiamata in espressione.find_all(exp.Anonymous):
+            nome = normalize_identifier(str(chiamata.this or "")).lower()
+            if nome and nome not in LIBRERIE_NOTE and len(nome) >= 3:
+                nomi.add(nome)
+    return nomi
+
 
 def extract_interfaces(code, filename):
     interfaces = []
@@ -364,7 +606,7 @@ def extract_interfaces(code, filename):
             })
     return unique_dicts(interfaces, ["name", "interface_type", "source_file"])
 
-def extract_local_risks(code, filename):
+def extract_local_risks(code, filename, language=""):
     risks = []
     patterns = [
         {"type": "HARDCODED_CREDENTIAL", "pattern": r"(?i)\b(?:password|passwd|pwd|secret|api_key|apikey)\s*[:=]\s*[\"'][^\"']+[\"']", "sev": "CRITICAL", "desc": "Possible hard-coded credential."},
@@ -372,9 +614,15 @@ def extract_local_risks(code, filename):
         {"type": "GENERIC_EXCEPTION_HANDLER", "pattern": r"\bWHEN\s+OTHERS\b|\bcatch\s*\(\s*Exception\b|\bexcept\s+Exception\b", "sev": "MEDIUM", "desc": "Generic exception handling."},
         {"type": "EMPTY_EXCEPTION_HANDLER", "pattern": r"\bWHEN\s+OTHERS\s+THEN\s+NULL\b|\bexcept\s*:\s*pass\b", "sev": "HIGH", "desc": "Exception is potentially suppressed."},
         {"type": "DIRECT_COMMIT", "pattern": r"\bCOMMIT\s*;", "sev": "MEDIUM", "desc": "Explicit transaction commit."},
-        {"type": "SELECT_ALL", "pattern": r"\bSELECT\s+\*\s+FROM\b", "sev": "LOW", "desc": "SELECT * creates unnecessary coupling."}
+        {"type": "SELECT_ALL", "pattern": r"\bSELECT\s+\*\s+FROM\b", "sev": "LOW", "desc": "SELECT * creates unnecessary coupling."},
+        # Visual Basic: gli errori ignorati e i salti
+        {"type": "SUPPRESSED_ERRORS", "pattern": r"(?im)^\s*On\s+Error\s+Resume\s+Next\b", "sev": "HIGH", "desc": "On Error Resume Next: every error after this line is silently ignored.", "solo": VBISH},
+        {"type": "GOTO", "pattern": r"(?im)^\s*GoTo\s+\w+", "sev": "LOW", "desc": "GoTo jump: control flow is hard to follow and to migrate.", "solo": VBISH + ("cobol", "basic", "fortran")},
+        {"type": "LATE_BINDING", "pattern": r"(?i)\bCreateObject\s*\(", "sev": "MEDIUM", "desc": "CreateObject: a COM dependency resolved only at run time.", "solo": VBISH},
     ]
     for risk_def in patterns:
+        if not _vale_per(language, risk_def.get("solo")):
+            continue
         trovati = 0
         for match in re.finditer(risk_def["pattern"], code, flags=re.IGNORECASE | re.MULTILINE):
             line_num = code[:match.start()].count("\n") + 1
@@ -389,17 +637,21 @@ def extract_local_risks(code, filename):
                 break
     return risks
 
-def extract_data_operations_with_regex(code, filename):
+def extract_data_operations_with_regex(code, filename, language=""):
     patterns = {
         "READ": [r"\bFROM\s+([A-Z0-9_$#.]+)", r"\bJOIN\s+([A-Z0-9_$#.]+)"],
         "CREATE": [r"\bINSERT\s+INTO\s+([A-Z0-9_$#.]+)"],
         "UPDATE": [r"\bUPDATE\s+([A-Z0-9_$#.]+)"],
         "DELETE": [r"\bDELETE\s+FROM\s+([A-Z0-9_$#.]+)"],
         "MERGE": [r"\bMERGE\s+INTO\s+([A-Z0-9_$#.]+)"],
-        "DDL_CREATE": [r"\bCREATE\s+(?:TABLE|VIEW)\s+([A-Z0-9_$#.]+)"]
+        "DDL_CREATE": [r"\bCREATE\s+(?:TABLE|VIEW)\s+([A-Z0-9_$#.]+)"],
+        # JCL: i dataset letti o scritti dagli step
+        "DATASET": [r"\bDSN=([A-Z0-9@#$.()+-]+)"]
     }
     data_objects = []
     for operation, ops in patterns.items():
+        if operation == "DATASET" and not _vale_per(language, ("jcl",)):
+            continue
         for pattern in ops:
             for match in re.findall(pattern, code, flags=re.IGNORECASE)[:MAX_RIGHE_PER_TIPO]:
                 data_objects.append({
@@ -459,25 +711,38 @@ def resolve_dependencies(metadata):
     dichiarati.discard("")
     fuori, risolte, incerte, scartate = [], 0, 0, 0
     for d in metadata.get("dependencies", []):
-        if d.get("dependency_type") != "PROBABLE_CALL":
+        # Si guardano tutte le chiamate, non solo i sospetti: una conferma
+        # dell'albero sintattico dice che quella È una chiamata, non che il
+        # bersaglio sia interessante. Sono due assi diversi, e prima la
+        # conferma scavalcava il filtro del rumore — `System.out.println`
+        # tornava dentro come chiamata certa.
+        if d.get("dependency_type") not in ("PROBABLE_CALL", "CALL"):
             fuori.append(d)
             continue
         bersaglio = str(d.get("target", "")).strip().lower()
-        # `pkg.procedura` risolve anche se in codebase è dichiarata `procedura`
         corto = bersaglio.rsplit(".", 1)[-1]
         primo = bersaglio.split(".", 1)[0]
+        if (bersaglio in LIBRERIE_NOTE or corto in LIBRERIE_NOTE
+                # `System.out.println`: quello che conta è il primo pezzo, non
+                # l'ultimo — è lì che sta il nome della libreria.
+                or (primo in LIBRERIE_NOTE and primo != bersaglio) or len(corto) < 4):
+            scartate += 1
+            continue
+        confermata = "tree" in str(d.get("evidence", "")) or "AST" in str(d.get("evidence", ""))
         if bersaglio in dichiarati or corto in dichiarati:
             d["dependency_type"] = "CALL"
             d["confidence"] = "HIGH"
-            d["evidence"] = "Call pattern resolved against a component declared in the codebase"
+            d["evidence"] = "Call resolved against a component declared in the codebase"
             risolte += 1
-        elif (bersaglio in LIBRERIE_NOTE or corto in LIBRERIE_NOTE
-              # `System.out.println`: quello che conta è il primo pezzo, non
-              # l'ultimo — è lì che sta il nome della libreria.
-              or (primo in LIBRERIE_NOTE and primo != bersaglio) or len(corto) < 4):
-            scartate += 1
-            continue
+        elif confermata:
+            # È una chiamata per certo, ma punta fuori dal codice caricato:
+            # certa sul fatto, incerta su cosa ci sia dall'altra parte.
+            d["dependency_type"] = "CALL"
+            d["confidence"] = "MEDIUM"
+            d["evidence"] = "Confirmed call, but the target is not in the submitted code"
+            incerte += 1
         else:
+            d["dependency_type"] = "PROBABLE_CALL"
             d["confidence"] = "LOW"
             d["evidence"] = "Unresolved call pattern: target is not declared in the submitted code"
             incerte += 1
@@ -493,11 +758,34 @@ def resolve_dependencies(metadata):
 
 def analyze_single_source_locally(source):
     filename, code = source["filename"], source["content"]
-    components = extract_functions_and_procedures(code, filename)
-    dependencies = extract_imports_and_includes(code, filename)
-    dependencies.extend(extract_probable_calls(code, filename, components))
+    lingua_file = source["language"]
+    components = extract_functions_and_procedures(code, filename, lingua_file)
+    dependencies = extract_imports_and_includes(code, filename, lingua_file)
+    # Prima si prova a leggere il file per davvero. Dove l'albero sintattico
+    # c'è — Python con `ast`, SQL e PL/SQL con sqlglot — le chiamate sono nodi
+    # dell'albero e non indovinelli: escono a confidenza ALTA e il pattern
+    # generico non serve. Dove non c'è (Java, COBOL, RPG) si continua a
+    # indovinare, marcando le righe per quello che sono.
+    lingua = str(source["language"]).lower()
+    if "python" in lingua:
+        # `ast.parse` legge il file per intero o non legge niente: quando
+        # riesce, l'elenco delle chiamate è completo e il pattern generico
+        # aggiungerebbe solo rumore.
+        da_albero = extract_calls_python(code, filename)
+        if da_albero is not None:
+            dependencies.extend(da_albero)
+            dependencies.extend(extract_probable_calls(code, filename, components, generico=False))
+        else:
+            dependencies.extend(extract_probable_calls(code, filename, components))
+    elif "sql" in lingua:
+        # Qui l'albero è spesso parziale: serve a promuovere i sospetti che
+        # conferma, non a sostituire la ricerca.
+        dependencies.extend(extract_probable_calls(
+            code, filename, components, certi=nomi_chiamati_sql(code)))
+    else:
+        dependencies.extend(extract_probable_calls(code, filename, components))
     sql_metadata = extract_sql_metadata(code, filename)
-    data_objects = extract_data_operations_with_regex(code, filename)
+    data_objects = extract_data_operations_with_regex(code, filename, lingua_file)
     for table in sql_metadata["tables"]:
         data_objects.append({
             "object_name": table, "object_type": "DATABASE_OBJECT", "operation": "UNKNOWN",
@@ -511,7 +799,7 @@ def analyze_single_source_locally(source):
         "data_objects": unique_dicts(data_objects, ["object_name", "operation", "source_file"]),
         "sql_tables": sql_metadata["tables"], "sql_columns": sql_metadata["columns"][:MAX_RIGHE_PER_TIPO],
         "sql_operations": sql_metadata["operations"], "sql_relationships": sql_metadata["relationships"],
-        "local_risks": extract_local_risks(code, filename),
+        "local_risks": extract_local_risks(code, filename, lingua_file),
         "has_conditionals": bool(re.search(r"\b(?:IF|ELSE|ELSIF|CASE|WHEN|SWITCH)\b", code, flags=re.IGNORECASE))
     }
 
@@ -566,36 +854,142 @@ def build_chain(provider, api_key, azure_endpoint, model_name, preferenza, diari
         chiave=api_key,
         endpoint=azure_endpoint or "",
         deployment=model_name or "",
+        preferito=model_name or "",
         preferenza=preferenza,
         ragionamento=ragionamento,
         lingua="en",
         log=diario.append,
     )
 
-def ask_model(catena, prompt, provider):
+def ask_model(catena, prompt, provider, profondita="full"):
     """Una chiamata, con lo schema nativo dove il provider lo sa imporre."""
-    schema = contract.schema_gemini() if provider == "Google Gemini" else None
+    schema = contract.schema_gemini(profondita) if provider == "Google Gemini" else None
     return catena.chiedi(
         prompt,
         sistema=contract.SISTEMA,
         json_mode=True,
         schema=schema,
-        max_token=16000,
+        max_token=contract.PROFONDITA[profondita]["max_token"],
     )
 
-def analyze_batch(catena, provider, sources, metadata, lotto):
-    prompt = contract.prompt_analisi(sources, metadata_for_prompt(metadata, sources), lotto=lotto)
-    risposta = ask_model(catena, prompt, provider)
+
+# Quante volte si chiede al modello di proseguire da solo, prima di fermarsi
+# e mostrare il bottone. Due bastano quasi sempre; se non bastano, è giusto
+# che sia una persona a decidere se spendere ancora.
+CONTINUAZIONI_AUTOMATICHE = 2
+
+
+def stato_lotto(prompt, testo, modello, troncata, giri, sources, lotto, profondita, chiave=""):
+    """Tutto quello che serve per riprendere un lotto: il prompt, il testo
+    scritto finora, il modello che l'ha scritto, e se è finito.
+
+    Vive nella sessione, NON nel risultato esportato: il prompt contiene il
+    sorgente del cliente, e non deve finire in un JSON che gira per e-mail."""
+    completo = contract.risposta_completa(testo, troncata)
+    prof = contract.PROFONDITA[profondita]
+    saltate = ([n for n in contract.CAMPI if n not in prof["sezioni"]]
+               + [m for m in contract.CAMPI_MERMAID if m not in prof["mermaid"]])
     avvisi = []
-    if risposta.troncata:
-        avvisi.append(
-            f"Batch {lotto[0]}/{lotto[1]}: the model hit its output limit; the answer was "
-            "repaired and the last (incomplete) row was dropped."
-        )
-    grezzo = contract.estrai_json(risposta.testo)
-    normalizzato = contract.normalizza(grezzo, avvisi)
-    normalizzato["_modello"] = risposta.modello
-    return normalizzato
+    if not completo:
+        avvisi.append(f"Batch {lotto[0]}/{lotto[1]}: the model stopped after {len(testo):,} "
+                      "characters and the answer is incomplete. Continue with the same model "
+                      "before validating these rows — they may change.")
+    try:
+        grezzo = contract.estrai_json(testo)
+    except ValueError:
+        grezzo = {}
+    risultato = contract.normalizza(grezzo, avvisi, saltate=saltate)
+    risultato["_modello"] = modello
+    return {"prompt": prompt, "testo": testo, "modello": modello, "troncata": troncata,
+            "giri": giri, "completo": completo, "file": [x["filename"] for x in sources],
+            "lotto": lotto, "profondita": profondita, "chiave": chiave, "risultato": risultato}
+
+
+def continua_lotto(catena, stato, ragionamento, modello=None):
+    """Un giro di continuazione: dallo stesso punto, con lo stesso modello — o
+    con quello indicato, se la persona ha deciso di passare al successivo
+    perché il primo non risponde più. In quel caso lo si scrive nel
+    risultato: chi legge deve sapere che la riga 40 e la riga 41 le hanno
+    scritte due modelli diversi."""
+    con = modello or stato["modello"]
+    seguito = catena.continua(con, stato["prompt"], stato["testo"],
+                              sistema=contract.SISTEMA, ragionamento=ragionamento,
+                              max_token=contract.PROFONDITA[stato["profondita"]]["max_token"])
+    testo = contract.unisci_continuazione(stato["testo"], seguito.testo)
+    nuovo = stato_lotto(stato["prompt"], testo, con, seguito.troncata,
+                        stato["giri"] + 1, [{"filename": f} for f in stato["file"]],
+                        stato["lotto"], stato["profondita"], stato["chiave"])
+    nuovo["cambi_modello"] = list(stato.get("cambi_modello") or [])
+    if con != stato["modello"]:
+        nuovo["cambi_modello"].append(f"{stato['modello']} → {con}")
+    if nuovo["cambi_modello"]:
+        avvisi = list(nuovo["risultato"].get("contract_warnings") or [])
+        avvisi.append(f"Batch {stato['lotto'][0]}/{stato['lotto'][1]}: completed by a different "
+                      f"model after the first stopped answering ({', '.join(nuovo['cambi_modello'])})")
+        nuovo["risultato"]["contract_warnings"] = avvisi
+    return nuovo
+
+
+def analyze_batch(catena, provider, sources, metadata, lotto, profondita="full",
+                  ragionamento="low", chiave=""):
+    """Un lotto: la domanda, poi le continuazioni automatiche finché la
+    risposta non è completa o non si è esaurita la pazienza automatica."""
+    prompt = contract.prompt_analisi(sources, metadata_for_prompt(metadata, sources),
+                                     lotto=lotto, profondita=profondita)
+    risposta = ask_model(catena, prompt, provider, profondita)
+    stato = stato_lotto(prompt, risposta.testo, risposta.modello, risposta.troncata, 0,
+                        sources, lotto, profondita, chiave)
+    while not stato["completo"] and stato["giri"] < CONTINUAZIONI_AUTOMATICHE:
+        try:
+            stato = continua_lotto(catena, stato, ragionamento)
+        except NessunModello as e:
+            # Il modello che scriveva non risponde più (quota finita, giù).
+            # Non si fa cadere l'esecuzione — gli altri lotti sono buoni — e
+            # non si cambia modello di nascosto: si consegna il lotto a metà,
+            # con la causa, e sarà la persona a decidere cosa fare.
+            stato["continuazione_fallita"] = e.causa
+            avvisi = list(stato["risultato"].get("contract_warnings") or [])
+            avvisi.append(f"Batch {lotto[0]}/{lotto[1]}: the model stopped answering while "
+                          f"continuing ({e.causa}); the answer stays incomplete")
+            stato["risultato"]["contract_warnings"] = avvisi
+            break
+    return stato
+
+
+# =============================================================================
+# LA CACHE DEI LOTTI — riconoscere il lavoro già fatto.
+# Un lotto è identificato dai suoi file (le impronte), dal contratto e da come
+# è stato chiesto (provider, preferenza, ragionamento, profondità). Stessa
+# chiave, stessa risposta: si rilegge dal disco invece di ripagarla. Ci si
+# guadagna quando si rilancia dopo aver aggiunto un file, quando si chiude e
+# si riapre, quando due colleghi analizzano la stessa cosa sulla stessa
+# macchina. La cartella è visibile e non è versionata.
+# =============================================================================
+CARTELLA_CACHE = Path(__file__).parent / "cache"
+
+
+def chiave_lotto(lotto, provider, model_name, preferenza, ragionamento, profondita):
+    parti = [contract.VERSIONE_CONTRATTO, provider, model_name or "", preferenza,
+             ragionamento, profondita] + sorted(s["hash"] for s in lotto)
+    return hashlib.sha256("|".join(parti).encode()).hexdigest()[:24]
+
+
+def leggi_cache(chiave):
+    try:
+        return json.loads((CARTELLA_CACHE / f"{chiave}.json").read_text("utf-8"))
+    except Exception:
+        return None
+
+
+def scrivi_cache(chiave, dati):
+    try:
+        CARTELLA_CACHE.mkdir(exist_ok=True)
+        tmp = CARTELLA_CACHE / f"{chiave}.tmp"
+        tmp.write_text(json.dumps(dati, ensure_ascii=False, default=str), "utf-8")
+        tmp.replace(CARTELLA_CACHE / f"{chiave}.json")
+    except Exception:
+        pass  # la cache è un lusso: se non si scrive, si ripaga la prossima volta
+
 
 def merge_static_and_ai_results(ai_result, metadata):
     """Le due metà si uniscono DOPO essere passate entrambe dal contratto: è
@@ -615,47 +1009,134 @@ def merge_static_and_ai_results(ai_result, metadata):
     # anche le dipendenze trovate dal parser, non solo quelle viste dal modello.
     return diagrams.arricchisci(r)
 
-def analysis_signature(sources, provider, model_name, preferenza):
+def carica_analisi_salvata(grezzo_bytes):
+    """Riporta in vita un JSON esportato, anche di una versione precedente.
+
+    Passa dal contratto come una risposta del modello: i campi mancanti si
+    riempiono, gli enum si raddrizzano, le domande scritte come stringhe (v1)
+    diventano righe, il campo `steps` assente (v2.0) resta vuoto. Le spunte
+    dell'esperto sopravvivono perché `sme_approved` viene conservato riga per
+    riga. Le chiavi di servizio (`_…`) si riportano a mano, perché il contratto
+    le ignora di proposito."""
+    dati = json.loads(grezzo_bytes.decode("utf-8-sig"))
+    if not isinstance(dati, dict):
+        raise ValueError("not a JSON object")
+    if not any(k in dati for k in contract.CAMPI):
+        raise ValueError("none of the contract sections is present")
+    metadati = dati.get("_metadata") or {}
+    risultato = contract.normalizza(dati)
+    for chiave in ("_modello", "_provider", "_lotti", "_ragionamento", "_durata_s",
+                   "_diagrammi_dal_modello", "_diagrammi_dai_dati", "_diagrammi_fonte"):
+        if chiave in dati:
+            risultato[chiave] = dati[chiave]
+    risultato.setdefault("_lotti", 1)
+    if dati.get("_incompleti"):
+        # Da un file non si può continuare: il prompt e il testo a metà stanno
+        # nella sessione, non nel JSON. Lo si dice, e si sblocca l'avvio.
+        avvisi = list(risultato.get("contract_warnings") or [])
+        avvisi.append("this analysis was saved while incomplete; it cannot be continued "
+                      "from a file — run it again")
+        risultato["contract_warnings"] = avvisi
+        risultato["_incompleti"] = []
+    # I diagrammi si ricostruiscono dai dati se il file non li portava: un
+    # JSON vecchio ne ha al massimo quelli del modello.
+    return diagrams.arricchisci(risultato), metadati
+
+
+def analysis_signature(sources, provider, model_name, preferenza, profondita="full"):
     """L'impronta dell'analisi: stessi file, stesso provider, stesso contratto
     ⇒ stessa risposta. Serve a non ripagare (e non riaspettare) tre minuti di
     modello ogni volta che Streamlit ricarica la pagina."""
-    parti = [contract.VERSIONE_CONTRATTO, provider, model_name or "", preferenza]
+    parti = [contract.VERSIONE_CONTRATTO, provider, model_name or "", preferenza, profondita]
     parti += sorted(s["hash"] for s in sources)
     return hashlib.sha256("|".join(parti).encode()).hexdigest()[:16]
 
 def analyze_legacy_application(sources, metadata, provider, api_key, model_name,
                                azure_endpoint=None, preferenza="qualita", progress=None,
-                               ragionamento="low"):
+                               ragionamento="low", profondita="full", parallelismo=1,
+                               usa_cache=True):
+    """Torna (risultato composto, stati dei lotti). Gli stati servono a
+    continuare i lotti incompleti con lo stesso modello."""
     diario = []
     partenza = time.time()
     catena = build_chain(provider, api_key, azure_endpoint, model_name, preferenza, diario,
                          ragionamento)
-    lotti = split_into_batches(sources)
+    lotti = split_into_batches(sources, metadata=metadata)
     if len(lotti) > MAX_LOTTI:
         raise ValueError(
             f"The codebase would need {len(lotti)} batches (limit {MAX_LOTTI}). "
             "Analyse it in separate runs, by subsystem."
         )
-    risultati = []
-    for i, lotto in enumerate(lotti, start=1):
-        if progress:
-            progress(i, len(lotti), [s["filename"] for s in lotto])
-        risultati.append(analyze_batch(catena, provider, lotto, metadata, (i, len(lotti))))
+    n = len(lotti)
+    stati = [None] * n
+    da_fare, riusati, completati = [], 0, 0
+    for i, lotto in enumerate(lotti):
+        chiave = chiave_lotto(lotto, provider, model_name, preferenza, ragionamento, profondita)
+        salvato = leggi_cache(chiave) if usa_cache else None
+        if salvato is not None:
+            stati[i] = {"completo": True, "dalla_cache": True, "risultato": salvato,
+                        "file": [x["filename"] for x in lotto], "lotto": (i + 1, n),
+                        "profondita": profondita, "chiave": chiave, "giri": 0}
+            riusati += 1
+            completati += 1
+            if progress:
+                progress(completati, n, [x["filename"] for x in lotto], riusato=True)
+        else:
+            da_fare.append((i, lotto, chiave))
+
+    if da_fare:
+        # La prova di contatto si fa UNA volta, prima di aprire i thread: così
+        # i lotti in parallelo partono tutti dal modello che ha risposto invece
+        # di rifare la prova ciascuno per conto suo.
+        catena.chiedi("ping", solo_prova=True)
+        # I lotti in parallelo: la chiamata al modello è attesa di rete, e
+        # tenerne una sola in volo alla volta è tempo buttato. Il tetto lo
+        # sceglie l'utente perché è la sua quota che si consuma più in fretta.
+        with ThreadPoolExecutor(max_workers=max(1, min(parallelismo, len(da_fare)))) as pool:
+            futuri = {pool.submit(analyze_batch, catena, provider, lotto, metadata, (i + 1, n),
+                                  profondita, ragionamento, chiave): (i, lotto, chiave)
+                      for i, lotto, chiave in da_fare}
+            for futuro in as_completed(futuri):
+                i, lotto, chiave = futuri[futuro]
+                stati[i] = futuro.result()   # un guasto qui risale a chi chiama
+                if usa_cache and stati[i]["completo"]:
+                    scrivi_cache(chiave, stati[i]["risultato"])
+                completati += 1
+                if progress:   # sempre dal thread principale: Streamlit lo pretende
+                    progress(completati, n, [x["filename"] for x in lotto])
+
+    risultato = componi_risultato(stati, metadata, catena, provider, lotti, profondita,
+                                  ragionamento, riusati, diario, partenza)
+    return risultato, stati
+
+
+def componi_risultato(stati, metadata, catena, provider, lotti, profondita, ragionamento,
+                      riusati, diario, partenza):
+    """Dai lotti al risultato unico. Separata dall'analisi perché si rifà
+    anche dopo una continuazione, quando un lotto passa da incompleto a
+    completo."""
+    risultati = [s["risultato"] for s in stati]
     unito = contract.unisci(risultati)
-    unito["_modello"] = risultati[-1].get("_modello", "")
+    unito["_modello"] = next((s.get("modello") or s["risultato"].get("_modello", "")
+                              for s in reversed(stati)), "")
     unito["_diario"] = diario
     unito["_lotti"] = len(lotti)
+    unito["_riusati"] = riusati
+    unito["_profondita"] = profondita
+    unito["_ragionamento"] = ragionamento
+    unito["_durata_s"] = round(time.time() - partenza)
+    unito["_incompleti"] = [i + 1 for i, s in enumerate(stati) if not s["completo"]]
     completo = merge_static_and_ai_results(unito, metadata)
-    completo["_ragionamento"] = ragionamento
-    completo["_durata_s"] = round(time.time() - partenza)
-    if len(lotti) > 1:
-        if progress:
-            progress(len(lotti) + 1, len(lotti) + 1, ["consolidating the batches"])
+    if len(lotti) > 1 and not completo["_incompleti"]:
+        # Il consolidamento vuole tutti i lotti finiti: lavora sull'inventario,
+        # e un inventario a metà produce collegamenti a metà.
         completo = consolida(catena, provider, completo, lotti)
-        # I diagrammi si rifanno: i collegamenti fra lotti sono archi nuovi del
-        # call graph, ed è esattamente quello che nessun lotto poteva vedere.
         completo = diagrams.arricchisci(completo)
         completo["_durata_s"] = round(time.time() - partenza)
+    elif completo["_incompleti"]:
+        avvisi = list(completo.get("contract_warnings") or [])
+        avvisi.append("consolidation postponed: not all batches are complete yet")
+        completo["contract_warnings"] = avvisi
     return completo
 
 
@@ -734,9 +1215,10 @@ ETICHETTE = {
     "addressed_to": "Ask", "data_description": "Data", "impact_description": "Effect",
     "change_scenario": "Change", "involved_components": "Components",
     "affected_components": "Components", "source": "Found by",
+    "steps": "Steps, in order",
 }
 # I campi che contengono prosa: vogliono spazio, gli altri no.
-LARGHI = {"description", "evidence", "condition", "action", "impact", "recommendation",
+LARGHI = {"steps", "description", "evidence", "condition", "action", "impact", "recommendation",
           "impact_description", "business_impact", "question", "why_it_matters",
           "assumption", "purpose", "data_description", "transformation", "mitigation",
           "basis", "risk_if_wrong", "change_scenario", "outcome", "trigger"}
@@ -784,7 +1266,6 @@ def _ordina_colonne(df, nome):
 
 
 def render_tabella(nome, risultato, chiave):
-    spec = contract.CAMPI[nome]
     titolo, spiegazione = SEZIONI[nome]
     righe = list(risultato.get(nome, []) or [])
     confermate = sum(1 for r in righe if r.get("sme_approved"))
@@ -869,6 +1350,11 @@ def quality_indicators(result, metadata):
     }
     file_totali = {f.get("filename") for f in metadata.get("files", [])} - {None, ""}
     citati = set()
+    # Tutto il testo delle righe scritte dal modello, per chiedersi quanto di
+    # quello che il parser ha trovato è stato poi DESCRITTO da qualche parte.
+    # Non è completezza — quella non la sa nessuno — ma è una domanda vera con
+    # una risposta vera, perché i fatti del parser sono verità nota.
+    testo_righe = []
     righe, con_evidenza, alta, non_risolte, confermate = 0, 0, 0, 0, 0
     gravi = {"CRITICAL": 0, "HIGH": 0}
     for nome in contract.CAMPI:
@@ -888,11 +1374,34 @@ def quality_indicators(result, metadata):
             for campo in ("source_file", "affected_component", "source"):
                 if str(r.get(campo, "")).strip() in file_totali:
                     citati.add(str(r.get(campo, "")).strip())
+            if nome != "components":
+                testo_righe.append(" ".join(str(v) for v in r.values()).lower())
+    tutto_il_testo = " ".join(testo_righe)
+
+    componenti_parser = {str(c.get("component_name", "")).strip()
+                         for c in metadata.get("components", [])} - {""}
+    componenti_descritti = {c for c in componenti_parser if c.lower() in tutto_il_testo}
+    tabelle_parser = {str(t).strip() for t in metadata.get("detected_tables", [])} - {""}
+    tabelle_descritte = {t for t in tabelle_parser if t.lower() in tutto_il_testo}
+
+    # Il segnale più forte che l'applicazione sa dare su sé stessa: un file
+    # pieno di IF e CASE da cui non è uscita nessuna regola di business è
+    # quasi sempre un file che il modello ha saltato.
+    con_regole = {str(r.get("source_file", "")).strip()
+                  for r in result.get("business_rules", []) or []}
+    muti = sorted(f.get("filename") for f in metadata.get("files", [])
+                  if f.get("has_conditionals") and f.get("filename") not in con_regole)
 
     def pct(parte, tutto):
         return round(parte / tutto * 100) if tutto else 0
 
     return {"sezioni": sezioni, "sezioni_pct": pct(sum(sezioni.values()), len(sezioni)),
+            "componenti_parser": len(componenti_parser),
+            "componenti_descritti": len(componenti_descritti),
+            "componenti_pct": pct(len(componenti_descritti), len(componenti_parser)),
+            "tabelle_parser": len(tabelle_parser),
+            "tabelle_pct": pct(len(tabelle_descritte), len(tabelle_parser)),
+            "file_muti": muti,
             "file_totali": len(file_totali), "file_citati": len(citati),
             "file_pct": pct(len(citati), len(file_totali)),
             "file_mai_citati": sorted(file_totali - citati),
@@ -935,30 +1444,94 @@ if provider == "Microsoft Azure OpenAI":
                                     value=os.environ.get("AZURE_OPENAI_API_KEY", ""))
     azure_endpoint = st.sidebar.text_input("Endpoint",
                                            value=os.environ.get("AZURE_OPENAI_ENDPOINT", ""))
-    model_name = st.sidebar.text_input(
-        "Deployment name", value=os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o"),
-        help="On Azure the callable name is the deployment name, which only you know. "
-             "It stays first in the chain; other deployments on the endpoint act as fallback.")
+    _predefinito = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "")
 elif provider == "Anthropic Claude":
     api_key = st.sidebar.text_input("API key", type="password",
                                     value=os.environ.get("ANTHROPIC_API_KEY", ""))
-    model_name = st.sidebar.text_input(
-        "Preferred model", value=os.environ.get("ANTHROPIC_MODEL", ""),
-        placeholder="leave empty to choose automatically",
-        help="Leave empty and the app uses the best model your key can reach.")
+    _predefinito = os.environ.get("ANTHROPIC_MODEL", "")
 else:
     api_key = st.sidebar.text_input("API key", type="password",
                                     value=os.environ.get("GEMINI_API_KEY", ""))
-    model_name = st.sidebar.text_input(
-        "Preferred model", value=os.environ.get("GEMINI_MODEL", ""),
-        placeholder="leave empty to choose automatically",
-        help="Leave empty and the app uses the best model your key can reach.")
+    _predefinito = os.environ.get("GEMINI_MODEL", "")
+
+with st.sidebar.expander("Check the connection"):
+    # Subito dopo la chiave, prima di scegliere un modello: verifica la chiave
+    # e la catena così come la trova, con una domanda da due parole a ogni
+    # modello in ordine. Rifà la scoperta, quindi aggiorna anche il menù dei
+    # modelli qui sotto.
+    st.caption("Runs a two-word question against each model in turn and reports "
+               "the first that answers. Also refreshes the model list below.")
+    if st.button("Run check", disabled=not api_key, **ui.LARGA):
+        diario = []
+        catena = build_chain(provider, api_key, azure_endpoint, "", "qualita", diario)
+        t0 = time.time()
+        try:
+            with st.spinner("Asking each model in turn…"):
+                r = catena.chiedi("ping", solo_prova=True, forza_elenco=True)
+            st.success(f"{r.modello} answered in {int((time.time()-t0)*1000)} ms")
+        except NessunModello as e:
+            st.error(catena.messaggio_nessuno(e))
+            st.caption(f"technical cause: {e.causa}")
+        st.session_state.pop("modelli_scoperti", None)   # l'elenco è appena stato rifatto
+        st.code("\n".join(diario) or "no log", language="text")
 
 preferenza = "qualita" if st.sidebar.radio(
     "Pick models by", ["Quality", "Speed and cost"], index=0, horizontal=True,
     help="Quality starts from the strongest models and falls back downwards. "
          "Speed keeps only the fast ones."
 ) == "Quality" else "velocita"
+
+
+def scopri_modelli(provider, api_key, azure_endpoint, preferenza):
+    """I modelli che questa chiave può usare davvero, dal più nuovo in giù.
+
+    Si chiede al provider una volta per chiave (la catena tiene l'elenco in
+    memoria per sei ore); il menù si riempie da solo, e chi sceglie sceglie fra
+    cose che esistono. Prima c'era un campo di testo libero in cui si poteva
+    scrivere qualunque nome — e per due provider su tre non veniva nemmeno
+    letto."""
+    if not api_key:
+        return [], "no key"
+    impronta = hashlib.sha256(f"{provider}|{api_key}|{azure_endpoint}|{preferenza}".encode()).hexdigest()[:16]
+    ricordo = st.session_state.get("modelli_scoperti") or {}
+    if ricordo.get("impronta") == impronta:
+        return ricordo["lista"], ricordo["fonte"]
+    try:
+        esito = build_chain(provider, api_key, azure_endpoint, "", preferenza, []).catena()
+        lista, fonte = esito["lista"], esito["fonte"]
+    except Exception as e:  # noqa: BLE001
+        lista, fonte = [], f"discovery failed: {e}"
+    st.session_state["modelli_scoperti"] = {"impronta": impronta, "lista": lista, "fonte": fonte}
+    return lista, fonte
+
+
+_modelli, _fonte = scopri_modelli(provider, api_key, azure_endpoint, preferenza)
+_da_rete = _fonte.startswith("rete") or _fonte.startswith("discovery")
+AUTOMATICO = "Automatic (the chain decides)"
+if provider == "Microsoft Azure OpenAI" and (_da_rete or not _modelli):
+    # Su Azure l'elenco dei deployment richiede un permesso che la chiave può
+    # non avere. Se non si è potuto leggere, il nome si scrive a mano: è
+    # l'unico caso in cui resta un campo di testo.
+    model_name = st.sidebar.text_input(
+        "Deployment name", value=_predefinito or "gpt-4o",
+        help="The deployments on this endpoint could not be listed, so type the name. "
+             "It stays first in the chain.")
+else:
+    _opzioni = [AUTOMATICO] + _modelli
+    _indice = _opzioni.index(_predefinito) if _predefinito in _opzioni else 0
+    _scelto = st.sidebar.selectbox(
+        "Preferred model", _opzioni, index=_indice, disabled=not api_key,
+        help=("Automatic: the chain starts from the best model found and falls back "
+              "downwards. Pick one to start from that model instead; if it does not "
+              "answer, the chain falls back to the others, best first." if _modelli else
+              "Enter the API key above and the models found on it appear here."))
+    model_name = "" if _scelto == AUTOMATICO else _scelto
+    if api_key and _modelli:
+        st.sidebar.caption(f"{len(_modelli)} model{'s' if len(_modelli) != 1 else ''} found "
+                           f"on this key ({_fonte}), newest first.")
+    elif api_key:
+        st.sidebar.caption(f"No model list yet ({_fonte}). The chain falls back to the "
+                           "built-in list.")
 
 RAGIONAMENTO = {"Fast": "minimal", "Balanced": "low", "Thorough": "medium", "Deep": "high"}
 ragionamento = RAGIONAMENTO[st.sidebar.select_slider(
@@ -967,41 +1540,104 @@ ragionamento = RAGIONAMENTO[st.sidebar.select_slider(
          "long a run takes — more than the choice of model. If a model refuses the level you "
          "pick, the app moves up one step for that model and carries on.")]
 
-with st.sidebar.expander("Check the connection"):
-    st.caption("Runs a two-word question against each model in turn and reports "
-               "the first that answers.")
-    if st.button("Run check", disabled=not api_key, **ui.LARGA):
-        diario = []
-        catena = build_chain(provider, api_key, azure_endpoint, model_name, preferenza, diario,
-                             ragionamento)
-        t0 = time.time()
-        try:
-            r = catena.chiedi("ping", solo_prova=True, forza_elenco=True)
-            st.success(f"{r.modello} answered in {int((time.time()-t0)*1000)} ms")
-        except NessunModello as e:
-            st.error(catena.messaggio_nessuno(e))
-            st.caption(f"technical cause: {e.causa}")
-        st.code("\n".join(diario) or "no log", language="text")
-
 ui.tappa("2", "Source code")
 uploaded_files = st.sidebar.file_uploader(
-    "Files", type=SUPPORTED_EXTENSIONS, accept_multiple_files=True,
-    help="Oracle PL/SQL, COBOL, RPG, Java, Python and more. Up to 2 MB per file.")
+    "Files", type=None, accept_multiple_files=True,
+    help="Any text file: PL/SQL, COBOL and copybooks, JCL, RPG and DDS, Visual Basic "
+         "(.vb, .bas, .frm, .cls), Java, C#, Python, PHP, Delphi, ABAP, shell scripts and "
+         "more. Extensions the app does not know are still analysed — the model reads the "
+         "content. Binary files are refused. Up to 2 MB per file.")
 with st.sidebar.expander("Or paste a snippet"):
     pasted_filename = st.text_input("File name", value="pasted_source.sql")
     pasted_code = st.text_area("Source", height=180,
                                placeholder="Paste code here to analyse it without uploading a file.")
 
+with st.sidebar.expander("Or resume a saved analysis"):
+    # Il lavoro dell'esperto — le spunte, le correzioni — vive nella sessione
+    # del browser, e una sessione si chiude. Il JSON esportato è l'unico posto
+    # dove sopravvive, e senza questo caricatore era un posto da cui non si
+    # tornava indietro.
+    st.caption("A JSON exported from the Export tab, ticks and corrections included.")
+    json_caricato = st.file_uploader("Saved analysis", type=["json"], accept_multiple_files=False)
+    if json_caricato is not None:
+        impronta_json = hashlib.sha256(json_caricato.getvalue()).hexdigest()[:16]
+        # Si carica UNA volta per file: il caricatore resta pieno a ogni giro
+        # della pagina, e ricaricare a ogni giro cancellerebbe le spunte messe
+        # dopo il caricamento.
+        if st.session_state.get("json_caricato") != impronta_json:
+            try:
+                risultato_caricato, metadati_caricati = carica_analisi_salvata(json_caricato.getvalue())
+                st.session_state.update({
+                    "analysis_result": risultato_caricato,
+                    "analysis_metadata": metadati_caricati,
+                    "analysis_sources": [],
+                    "analysis_provider": risultato_caricato.get("_provider", "saved file"),
+                    "analysis_model": risultato_caricato.get("_modello", "saved file"),
+                    "analysis_signature": "json:" + impronta_json,
+                    "json_caricato": impronta_json})
+                st.session_state.pop("pdf_bytes", None)
+                st.session_state.pop("docx_bytes", None)
+                st.success(f"Loaded: {len(risultato_caricato.get('business_rules', []))} business rules, "
+                           f"contract v{risultato_caricato.get('contract_version', '?')}.")
+            except Exception as e:  # noqa: BLE001
+                st.error(f"This file could not be loaded as an analysis: {e}")
+
+with st.sidebar.expander("Dependencies"):
+    # Il bottone lancia lo stesso `avvia.py` della riga di comando, con
+    # `--solo-preparazione`: una via sola, nessuna logica di installazione
+    # duplicata qui dentro che poi si allontana da quella vera.
+    _disegna = mermaid_render.prova_locale()
+    st.caption(("Diagrams are drawn on this machine." if _disegna else
+                "Diagrams are **not** drawn on this machine: their code would be sent to the "
+                "public mermaid.ink service. Everything else works."))
+    if st.button("Install what's missing", **ui.LARGA,
+                 help="Runs the same setup as «python avvia.py»: Python packages and the "
+                      "local diagram renderer, including the browser it needs. "
+                      "The first run downloads a few hundred MB and takes a while."):
+        with st.spinner("Installing… this can take a few minutes the first time."):
+            try:
+                esito = subprocess.run(
+                    [sys.executable, str(Path(__file__).parent / "avvia.py"),
+                     "--solo-preparazione"],
+                    capture_output=True, text=True, timeout=1800,
+                    cwd=str(Path(__file__).parent))
+                uscita = (esito.stdout or "") + (esito.stderr or "")
+            except subprocess.TimeoutExpired:
+                uscita = "Timed out after 30 minutes."
+            except Exception as e:  # noqa: BLE001
+                uscita = f"Could not run the setup: {e}"
+        st.code(uscita[-3000:] or "no output", language="text")
+        st.caption("New Python packages only take effect after the app is restarted. "
+                   "The diagram renderer works straight away.")
+
 ui.tappa("3", "Run")
+profondita = "quick" if st.sidebar.radio(
+    "Depth", ["Full", "Quick"], index=0, horizontal=True,
+    help="The time a run takes is mostly the model WRITING its answer. Quick asks for "
+         "the sections that pay for the run — processes, rules, components, dependencies, "
+         "interfaces, data, risks, questions — and caps the answer at less than half the "
+         "size: roughly half the time. Impact analysis, application map and assumptions "
+         "stay empty; diagrams are drawn from the tables anyway."
+) == "Quick" else "full"
+parallelismo = int(st.sidebar.select_slider(
+    "Batches at once", options=[1, 2, 3, 4], value=2,
+    help="How many batches are sent to the model at the same time. More is faster on big "
+         "codebases, but eats your rate limit faster: on a free-tier key stay at 1 or 2."))
 force_rerun = st.sidebar.checkbox(
     "Analyse again from scratch", value=False,
-    help="Off: the same files, provider and contract reuse the previous answer "
-         "instead of paying for it a second time.")
-run_analysis = st.sidebar.button("Analyse the application", type="primary", **ui.LARGA)
+    help="Off: batches whose files, settings and contract have not changed are read back "
+         "from the cache on disk instead of being paid for again — even across sessions.")
+# Finché un lotto è incompleto non si chiede una risposta nuova: si continua
+# quella. Il bottone resta visibile ma spento, con scritto perché.
+_incompleto = bool((st.session_state.get("analysis_result") or {}).get("_incompleti"))
+run_analysis = st.sidebar.button(
+    "Analyse the application", type="primary", disabled=_incompleto, **ui.LARGA,
+    help=("The previous answer is not complete yet: use «Continue with the same model» "
+          "on the page, or clear the results." if _incompleto else None))
 if st.sidebar.button("Clear results", **ui.LARGA):
     for key in ["analysis_result", "analysis_metadata", "analysis_sources",
                 "analysis_provider", "analysis_model", "analysis_signature",
-                "pdf_bytes", "docx_bytes"]:
+                "pdf_bytes", "docx_bytes", "lotti_stato"]:
         st.session_state.pop(key, None)
     st.rerun()
 
@@ -1041,28 +1677,41 @@ if run_analysis:
     elif provider == "Microsoft Azure OpenAI" and not azure_endpoint:
         st.error("Azure needs the endpoint of your resource. Add it under step 1.")
     else:
-        firma = analysis_signature(sources, provider, model_name, preferenza)
+        firma = analysis_signature(sources, provider, model_name, preferenza, profondita)
         if not force_rerun and st.session_state.get("analysis_signature") == firma:
             st.info("Same files and same settings as the last run — showing that result. "
                     "Tick «Analyse again from scratch» to pay for a new one.")
         else:
-            barra = st.progress(0.0, text="Reading the code…")
+            lavoro = ui.lavoro_in_corso("Reading the code…")
+            with lavoro:
+                diario = st.empty()
+                barra = st.progress(0.0)
             try:
                 metadata = extract_technical_metadata(sources)
                 inizio = time.time()
+                righe_diario = []
 
-                def avanza(i, n, nomi):
-                    # Il tempo che passa si mostra: un'analisi vera dura minuti,
-                    # e una barra ferma senza numeri sembra bloccata.
-                    barra.progress((i - 1) / n,
-                                   text=f"Batch {i}/{n} · {int(time.time()-inizio)}s · "
-                                        f"{', '.join(nomi)[:70]}")
+                def avanza(fatti, n, nomi, riusato=False):
+                    # Il tempo che passa e i lotti finiti si mostrano: un'analisi
+                    # vera dura minuti, e una pagina ferma sembra bloccata — a
+                    # quel punto la gente ricarica, e il lavoro fatto fin lì se
+                    # ne va. Con i lotti in parallelo si conta ciò che è FINITO.
+                    trascorsi = int(time.time() - inizio)
+                    ui.passo(lavoro, f"Asking the model — {fatti} of {n} batches done · {trascorsi}s")
+                    barra.progress(min(1.0, fatti / n))
+                    righe_diario.append(f"[{trascorsi:>4}s] {'from cache' if riusato else 'done'} "
+                                        f"{fatti}/{n}: {', '.join(nomi)[:60]}")
+                    diario.code("\n".join(righe_diario[-8:]), language="text")
 
-                result = analyze_legacy_application(
+                result, stati_lotti = analyze_legacy_application(
                     sources, metadata, provider, api_key, model_name,
                     azure_endpoint, preferenza, progress=avanza,
-                    ragionamento=ragionamento)
-                barra.empty()
+                    ragionamento=ragionamento, profondita=profondita,
+                    parallelismo=parallelismo, usa_cache=not force_rerun)
+                st.session_state["lotti_stato"] = stati_lotti
+                barra.progress(1.0)
+                ui.finito(lavoro, f"Analysed in {result.get('_durata_s', '?')}s "
+                                  f"with {result.get('_modello', 'the model')}")
                 st.session_state.update({
                     "analysis_result": result, "analysis_metadata": metadata,
                     "analysis_sources": sources, "analysis_provider": provider,
@@ -1072,14 +1721,14 @@ if run_analysis:
                 st.session_state.pop("docx_bytes", None)
                 ui.avviso_temporaneo(f"Analysed in {result.get('_durata_s', '?')}s")
             except NessunModello as e:
-                barra.empty()
+                ui.finito(lavoro, "No model answered", riuscito=False)
                 catena = build_chain(provider, api_key, azure_endpoint, model_name, preferenza, [],
                                      ragionamento)
                 st.error(catena.messaggio_nessuno(e))
                 with st.expander("What the app tried"):
                     st.code("\n".join(e.diario) or f"cause: {e.causa}", language="text")
             except Exception as e:
-                barra.empty()
+                ui.finito(lavoro, "The analysis stopped", riuscito=False)
                 st.error(f"The analysis stopped: {e}")
 
 if "analysis_result" not in st.session_state:
@@ -1098,11 +1747,127 @@ if "analysis_result" not in st.session_state:
 
 result = st.session_state["analysis_result"]
 metadata = st.session_state["analysis_metadata"]
+
+if result.get("_incompleti"):
+    stati_lotti = st.session_state.get("lotti_stato") or []
+    quali = ", ".join(f"batch {i}" + (f" ({', '.join(stati_lotti[i-1]['file'])[:50]})"
+                                       if i - 1 < len(stati_lotti) else "")
+                      for i in result["_incompleti"])
+    fermi = [s_ for s_ in stati_lotti if not s_.get("completo") and s_.get("continuazione_fallita")]
+    causa_fermo = fermi[0]["continuazione_fallita"] if fermi else st.session_state.get("continua_fallita")
+
+    def _ricomponi(catena_x, stati_x):
+        lotti_nomi = [[{"filename": f} for f in s_["file"]] for s_ in stati_x]
+        return componi_risultato(stati_x, metadata, catena_x, provider, lotti_nomi,
+                                 result.get("_profondita", "full"), ragionamento,
+                                 result.get("_riusati", 0), [],
+                                 time.time() - result.get("_durata_s", 0))
+
+    def _salva(res, stati_x):
+        st.session_state["analysis_result"] = res
+        st.session_state["lotti_stato"] = stati_x
+        st.session_state.pop("pdf_bytes", None)
+        st.session_state.pop("docx_bytes", None)
+        st.session_state.pop("continua_fallita", None)
+
+    with ui.riquadro():
+        if causa_fermo:
+            st.error(f"The answer is not complete ({quali}) and the model that was writing it "
+                     f"has stopped answering: {causa_fermo}. Three ways out, your choice — "
+                     "the app will not switch model on its own half-way through an answer.")
+        else:
+            st.warning(f"The answer is not complete: {quali}. The model stopped before the end "
+                       "and the rows below may change. Continue with the same model, from the "
+                       "point where it stopped — nothing already written is thrown away.")
+        if not stati_lotti:
+            st.caption("This analysis was loaded from a file: continuing is not possible, "
+                       "only a new run is.")
+        else:
+            catena_c = build_chain(provider, api_key, azure_endpoint, model_name, preferenza,
+                                   [], ragionamento)
+            modello_fermo = fermi[0]["modello"] if fermi else next(
+                (s_["modello"] for s_ in stati_lotti if not s_.get("completo") and "modello" in s_), "")
+            prossimo = catena_c.successivo(modello_fermo) if (causa_fermo and modello_fermo) else None
+            c1, c2, c3 = st.columns(3)
+
+            # ── 1. lo stesso modello, dallo stesso punto ───────────────────
+            if c1.button("Continue with the same model", type="primary" if not causa_fermo else "secondary",
+                         key="continua", **ui.LARGA,
+                         help="Asks the model that wrote the first part to pick up exactly where "
+                              "it stopped."):
+                try:
+                    with st.spinner("Asking the model to pick up where it stopped…"):
+                        for i, stato in enumerate(stati_lotti):
+                            if stato.get("completo") or "prompt" not in stato:
+                                continue
+                            stati_lotti[i] = continua_lotto(catena_c, stato, ragionamento)
+                            stati_lotti[i].pop("continuazione_fallita", None)
+                            if stati_lotti[i]["completo"] and not force_rerun and stato.get("chiave"):
+                                scrivi_cache(stato["chiave"], stati_lotti[i]["risultato"])
+                    _salva(_ricomponi(catena_c, stati_lotti), stati_lotti)
+                    ui.avviso_temporaneo("Answer completed" if not st.session_state["analysis_result"].get("_incompleti")
+                                         else "Still incomplete — continue once more")
+                    st.rerun()
+                except NessunModello as e:
+                    # Non si cambia modello da soli: si mostra la causa e si apre
+                    # la seconda via, che è una decisione della persona.
+                    st.session_state["continua_fallita"] = e.causa
+                    st.rerun()
+
+            # ── 2. il modello dopo, solo quando il primo non risponde più ───
+            if prossimo:
+                if c2.button(f"Continue with the next model ({prossimo})", type="primary",
+                             key="continua_prossimo", **ui.LARGA,
+                             help="Hands the rest of the answer to the next model in the chain. "
+                                  "The rows written so far are kept; the document will say which "
+                                  "batch was finished by a different model."):
+                    try:
+                        with st.spinner(f"Asking {prossimo} to finish the answer…"):
+                            for i, stato in enumerate(stati_lotti):
+                                if stato.get("completo") or "prompt" not in stato:
+                                    continue
+                                stati_lotti[i] = continua_lotto(catena_c, stato, ragionamento,
+                                                                modello=prossimo)
+                                stati_lotti[i].pop("continuazione_fallita", None)
+                        _salva(_ricomponi(catena_c, stati_lotti), stati_lotti)
+                        ui.avviso_temporaneo("Answer completed by " + prossimo)
+                        st.rerun()
+                    except NessunModello as e:
+                        st.error(f"{prossimo} did not answer either: {catena_c.messaggio_nessuno(e)}")
+            else:
+                c2.caption("«Continue with the next model» appears if the model that was "
+                           "writing stops answering.")
+
+            # ── 3. tenersi quello che c'è, o buttare tutto ─────────────────
+            if c3.button("Keep what was written", key="tieni", **ui.LARGA,
+                         help="Accepts the incomplete batches as they are: the rows already "
+                              "repaired stay, nothing more is asked. The document will say the "
+                              "batch was cut short."):
+                for i, stato in enumerate(stati_lotti):
+                    if not stato.get("completo"):
+                        stato["completo"] = True
+                        stato["accettato_incompleto"] = True
+                        avvisi = list(stato["risultato"].get("contract_warnings") or [])
+                        avvisi.append(f"Batch {stato['lotto'][0]}/{stato['lotto'][1]}: accepted "
+                                      "incomplete by the user; rows after the cut are missing")
+                        stato["risultato"]["contract_warnings"] = avvisi
+                _salva(_ricomponi(catena_c, stati_lotti), stati_lotti)
+                st.rerun()
+            if c3.button("Discard and start over", key="butta", **ui.LARGA,
+                         help="Throws away this run — cache included for these batches — and "
+                              "re-enables «Analyse the application»."):
+                for key in ["analysis_result", "analysis_metadata", "analysis_sources",
+                            "analysis_provider", "analysis_model", "analysis_signature",
+                            "pdf_bytes", "docx_bytes", "lotti_stato", "continua_fallita"]:
+                    st.session_state.pop(key, None)
+                st.rerun()
+
 q = quality_indicators(result, metadata)
 
 ui.cifre([
-    {"valore": f"{metadata['file_count']}", "voce": "Files read",
-     "nota": f"{metadata['total_line_count']:,} lines"},
+    # `.get`: un'analisi ricaricata da un JSON vecchio non porta i metadati.
+    {"valore": f"{metadata.get('file_count', '—')}", "voce": "Files read",
+     "nota": f"{metadata.get('total_line_count', 0):,} lines"},
     {"valore": f"{len(result.get('business_rules', []))}", "voce": "Business rules",
      "nota": "the section that pays for the run", "rilievo": True},
     {"valore": f"{len(result.get('components', []))}", "voce": "Components",
@@ -1140,11 +1905,22 @@ with tabs[0]:
         ui.cifre([
             {"valore": f"{q['file_pct']}%", "voce": "Files described",
              "nota": f"{q['file_citati']} of {q['file_totali']}"},
+            {"valore": f"{q['componenti_pct']}%", "voce": "Components described",
+             "nota": f"{q['componenti_descritti']} of the {q['componenti_parser']} "
+                     "the parser declared"},
+            {"valore": f"{q['tabelle_pct']}%", "voce": "SQL objects described",
+             "nota": f"of {q['tabelle_parser']} found in the code"},
             {"valore": f"{q['evidenza_pct']}%", "voce": "Rows with evidence"},
             {"valore": f"{q['confidenza_alta_pct']}%", "voce": "High confidence"},
             {"valore": f"{q['dipendenze_non_risolte']}", "voce": "Unresolved calls",
              "nota": "target not declared in the code you sent"},
         ])
+        if q["file_muti"]:
+            st.warning("These files contain IF, CASE or WHEN but produced no business rule. "
+                       "A file full of conditions with no rule out of it is usually a file "
+                       "the model skipped — worth a second run on those alone: "
+                       + ", ".join(q["file_muti"][:12])
+                       + (" …" if len(q["file_muti"]) > 12 else ""))
         st.write("**Sections filled:** " + ", ".join(
             ("✓ " if v else "· ") + k for k, v in q["sezioni"].items()))
         if q["file_mai_citati"]:
@@ -1166,9 +1942,12 @@ with tabs[0]:
                        "open so you know how much to trust what you are reading.")
             st.code("\n".join(avvisi[:200]), language="text")
 
-    st.caption(f"Answered by {st.session_state.get('analysis_model', '?')} · "
+    st.caption(("INCOMPLETE · " if result.get("_incompleti") else "")
+               + f"Answered by {st.session_state.get('analysis_model', '?')} · "
                f"thinking: {result.get('_ragionamento', '?')} · "
-               f"batches: {result.get('_lotti', 1)} · "
+               f"depth: {result.get('_profondita', 'full')} · "
+               f"batches: {result.get('_lotti', 1)}"
+               + (f" ({result.get('_riusati')} from cache)" if result.get('_riusati') else "") + " · "
                f"took {result.get('_durata_s', '?')}s · "
                f"contract v{result.get('contract_version', '?')}")
 
@@ -1318,8 +2097,17 @@ with tabs[8]:
         with ui.riquadro():
             st.markdown("**Raw data**")
             st.caption("Every row and every field, for whatever comes next.")
+            # Dentro ci vanno anche i metadati del parser e chi ha risposto:
+            # è quello che serve per RIPRENDERE il lavoro da questo file, non
+            # solo per leggerlo. Le chiavi di servizio cominciano con `_`.
+            da_salvare = dict(result)
+            da_salvare["_metadata"] = metadata
+            da_salvare["_provider"] = st.session_state.get("analysis_provider", "")
+            da_salvare["_modello"] = st.session_state.get("analysis_model", "")
             st.download_button(
                 "Download JSON",
-                data=json.dumps(result, indent=2, ensure_ascii=False, default=str).encode("utf-8"),
+                data=json.dumps(da_salvare, indent=2, ensure_ascii=False, default=str).encode("utf-8"),
                 file_name="Legacy_Application_Analysis.json",
-                mime="application/json", **ui.LARGA)
+                mime="application/json", **ui.LARGA,
+                help="Everything, including your ticks. Load it again under step 2 to pick up "
+                     "where you left off — the browser session alone does not remember it.")

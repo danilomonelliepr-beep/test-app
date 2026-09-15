@@ -1,3 +1,5 @@
+__version__ = "2026.09.14b"
+
 import ast
 import builtins
 import hashlib
@@ -20,7 +22,9 @@ import contract
 import diagrams
 import mermaid_render
 import ui
+from exporter import __version__ as exporter_versione
 from exporter import generate_docx_report, generate_pdf_report
+from model_chain import __version__ as model_chain_versione
 from model_chain import CatenaModelli, NessunModello
 
 # =============================================================================
@@ -33,6 +37,28 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 ui.applica_tema()
+
+# =============================================================================
+# I FILE SONO TUTTI DELLA STESSA VERSIONE?
+# È successo: `app.py` nuovo copiato nel repository, `mermaid_render.py`
+# rimasto vecchio, e l'app morta con un «AttributeError» redatto dal servizio
+# che non nomina nemmeno il file. Ogni modulo porta la sua versione; qui si
+# confrontano PRIMA di fare qualunque altra cosa, e se non coincidono lo si
+# dice con i nomi dei file da aggiornare — che è l'unica informazione utile.
+# =============================================================================
+def _versioni_allineate():
+    moduli = {"model_chain": model_chain_versione, "contract": contract.__version__,
+              "diagrams": diagrams.__version__, "mermaid_render": mermaid_render.__version__,
+              "exporter": exporter_versione, "ui": ui.__version__}
+    vecchi = [f"{nome}.py ({v})" for nome, v in moduli.items() if v != __version__]
+    if vecchi:
+        st.error(f"The files of this application are from different versions. app.py is "
+                 f"{__version__}; these are not: {', '.join(vecchi)}. Update the whole "
+                 "folder from the same package — never single files — then restart the app.")
+        st.stop()
+
+
+_versioni_allineate()
 
 # =============================================================================
 # 2. CONSTANTS
@@ -1682,10 +1708,14 @@ if run_analysis:
             st.info("Same files and same settings as the last run — showing that result. "
                     "Tick «Analyse again from scratch» to pay for a new one.")
         else:
+            # Niente barra di avanzamento: non c'è niente da misurare. Il
+            # tempo lo fa il modello mentre scrive, e quanto manchi non lo sa
+            # nessuno — una barra che si riempie subito e poi sta ferma dice
+            # una cosa falsa. Restano la rotella che gira, i secondi che
+            # passano e il diario dei lotti finiti, che sono veri.
             lavoro = ui.lavoro_in_corso("Reading the code…")
             with lavoro:
                 diario = st.empty()
-                barra = st.progress(0.0)
             try:
                 metadata = extract_technical_metadata(sources)
                 inizio = time.time()
@@ -1698,7 +1728,6 @@ if run_analysis:
                     # ne va. Con i lotti in parallelo si conta ciò che è FINITO.
                     trascorsi = int(time.time() - inizio)
                     ui.passo(lavoro, f"Asking the model — {fatti} of {n} batches done · {trascorsi}s")
-                    barra.progress(min(1.0, fatti / n))
                     righe_diario.append(f"[{trascorsi:>4}s] {'from cache' if riusato else 'done'} "
                                         f"{fatti}/{n}: {', '.join(nomi)[:60]}")
                     diario.code("\n".join(righe_diario[-8:]), language="text")
@@ -1709,7 +1738,6 @@ if run_analysis:
                     ragionamento=ragionamento, profondita=profondita,
                     parallelismo=parallelismo, usa_cache=not force_rerun)
                 st.session_state["lotti_stato"] = stati_lotti
-                barra.progress(1.0)
                 ui.finito(lavoro, f"Analysed in {result.get('_durata_s', '?')}s "
                                   f"with {result.get('_modello', 'the model')}")
                 st.session_state.update({

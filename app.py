@@ -1,4 +1,4 @@
-__version__ = "2026.09.14b"
+__version__ = "2026.09.16"
 
 import ast
 import builtins
@@ -36,6 +36,7 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+ui.imposta_tema_streamlit()   # prima di tutto: può far ripartire l'esecuzione
 ui.applica_tema()
 
 # =============================================================================
@@ -1453,12 +1454,35 @@ def build_docx(payload, metadata_payload, provider, model_name):
                                 provider=provider, model_name=model_name)
 
 
+def scopri_modelli(provider, api_key, azure_endpoint, preferenza):
+    """I modelli che questa chiave può usare davvero, dal più nuovo in giù.
+
+    Si chiede al provider una volta per chiave (la catena tiene l'elenco in
+    memoria per sei ore); il menù si riempie da solo, e chi sceglie sceglie fra
+    cose che esistono."""
+    if not api_key:
+        return [], "no key"
+    impronta = hashlib.sha256(
+        f"{provider}|{api_key}|{azure_endpoint}|{preferenza}".encode()).hexdigest()[:16]
+    ricordo = st.session_state.get("modelli_scoperti") or {}
+    if ricordo.get("impronta") == impronta:
+        return ricordo["lista"], ricordo["fonte"]
+    try:
+        esito = build_chain(provider, api_key, azure_endpoint, "", preferenza, []).catena()
+        lista, fonte = esito["lista"], esito["fonte"]
+    except Exception as e:  # noqa: BLE001
+        lista, fonte = [], f"discovery failed: {e}"
+    st.session_state["modelli_scoperti"] = {"impronta": impronta, "lista": lista, "fonte": fonte}
+    return lista, fonte
+
+
 # =============================================================================
 # 9. LA BARRA LATERALE — tre tappe, in ordine.
 # I numeri ci stanno perché questa È una sequenza: senza chiave non si analizza,
 # senza sorgenti non si esporta. Fuori da una sequenza vera, numerare è
 # decorazione.
 # =============================================================================
+# ── 1 · IL MODELLO ────────────────────────────────────────────────────────
 ui.tappa("1", "Model")
 provider = st.sidebar.selectbox(
     "Provider", ["Microsoft Azure OpenAI", "Anthropic Claude", "Google Gemini"],
@@ -1480,146 +1504,160 @@ else:
                                     value=os.environ.get("GEMINI_API_KEY", ""))
     _predefinito = os.environ.get("GEMINI_MODEL", "")
 
-with st.sidebar.expander("Check the connection"):
-    # Subito dopo la chiave, prima di scegliere un modello: verifica la chiave
-    # e la catena così come la trova, con una domanda da due parole a ogni
-    # modello in ordine. Rifà la scoperta, quindi aggiorna anche il menù dei
-    # modelli qui sotto.
-    st.caption("Runs a two-word question against each model in turn and reports "
-               "the first that answers. Also refreshes the model list below.")
-    if st.button("Run check", disabled=not api_key, **ui.LARGA):
-        diario = []
-        catena = build_chain(provider, api_key, azure_endpoint, "", "qualita", diario)
-        t0 = time.time()
-        try:
-            with st.spinner("Asking each model in turn…"):
-                r = catena.chiedi("ping", solo_prova=True, forza_elenco=True)
-            st.success(f"{r.modello} answered in {int((time.time()-t0)*1000)} ms")
-        except NessunModello as e:
-            st.error(catena.messaggio_nessuno(e))
-            st.caption(f"technical cause: {e.causa}")
-        st.session_state.pop("modelli_scoperti", None)   # l'elenco è appena stato rifatto
-        st.code("\n".join(diario) or "no log", language="text")
-
-preferenza = "qualita" if st.sidebar.radio(
-    "Pick models by", ["Quality", "Speed and cost"], index=0, horizontal=True,
-    help="Quality starts from the strongest models and falls back downwards. "
-         "Speed keeps only the fast ones."
-) == "Quality" else "velocita"
-
-
-def scopri_modelli(provider, api_key, azure_endpoint, preferenza):
-    """I modelli che questa chiave può usare davvero, dal più nuovo in giù.
-
-    Si chiede al provider una volta per chiave (la catena tiene l'elenco in
-    memoria per sei ore); il menù si riempie da solo, e chi sceglie sceglie fra
-    cose che esistono. Prima c'era un campo di testo libero in cui si poteva
-    scrivere qualunque nome — e per due provider su tre non veniva nemmeno
-    letto."""
-    if not api_key:
-        return [], "no key"
-    impronta = hashlib.sha256(f"{provider}|{api_key}|{azure_endpoint}|{preferenza}".encode()).hexdigest()[:16]
-    ricordo = st.session_state.get("modelli_scoperti") or {}
-    if ricordo.get("impronta") == impronta:
-        return ricordo["lista"], ricordo["fonte"]
+# Il controllo della connessione è un bottone, non un pannello da aprire: è la
+# prima cosa che si fa con una chiave nuova, e nasconderla dietro un clic in
+# più non aveva senso. L'esito resta sotto finché non si rilancia.
+if st.sidebar.button("Check the connection", disabled=not api_key, **ui.LARGA,
+                     help="Sends a two-word question to each model in turn and reports the "
+                          "first that answers. Also refreshes the model list."):
+    diario = []
+    catena = build_chain(provider, api_key, azure_endpoint, "", "qualita", diario)
+    t0 = time.time()
     try:
-        esito = build_chain(provider, api_key, azure_endpoint, "", preferenza, []).catena()
-        lista, fonte = esito["lista"], esito["fonte"]
-    except Exception as e:  # noqa: BLE001
-        lista, fonte = [], f"discovery failed: {e}"
-    st.session_state["modelli_scoperti"] = {"impronta": impronta, "lista": lista, "fonte": fonte}
-    return lista, fonte
+        with st.spinner("Asking each model in turn…"):
+            r = catena.chiedi("ping", solo_prova=True, forza_elenco=True)
+        esito_prova = ("ok", f"{r.modello} answered in {int((time.time()-t0)*1000)} ms")
+    except NessunModello as e:
+        esito_prova = ("ko", catena.messaggio_nessuno(e) + f"  (cause: {e.causa})")
+    st.session_state["esito_prova"] = esito_prova
+    st.session_state["diario_prova"] = diario
+    st.session_state.pop("modelli_scoperti", None)   # l'elenco è appena stato rifatto
 
+if st.session_state.get("esito_prova"):
+    _stato, _testo = st.session_state["esito_prova"]
+    (st.sidebar.success if _stato == "ok" else st.sidebar.error)(_testo)
+    with st.sidebar.expander("What it tried"):
+        st.code("\n".join(st.session_state.get("diario_prova") or []) or "no log",
+                language="text")
 
-_modelli, _fonte = scopri_modelli(provider, api_key, azure_endpoint, preferenza)
-_da_rete = _fonte.startswith("rete") or _fonte.startswith("discovery")
-AUTOMATICO = "Automatic (the chain decides)"
-if provider == "Microsoft Azure OpenAI" and (_da_rete or not _modelli):
-    # Su Azure l'elenco dei deployment richiede un permesso che la chiave può
-    # non avere. Se non si è potuto leggere, il nome si scrive a mano: è
-    # l'unico caso in cui resta un campo di testo.
-    model_name = st.sidebar.text_input(
-        "Deployment name", value=_predefinito or "gpt-4o",
-        help="The deployments on this endpoint could not be listed, so type the name. "
-             "It stays first in the chain.")
-else:
-    _opzioni = [AUTOMATICO] + _modelli
-    _indice = _opzioni.index(_predefinito) if _predefinito in _opzioni else 0
-    _scelto = st.sidebar.selectbox(
-        "Preferred model", _opzioni, index=_indice, disabled=not api_key,
-        help=("Automatic: the chain starts from the best model found and falls back "
-              "downwards. Pick one to start from that model instead; if it does not "
-              "answer, the chain falls back to the others, best first." if _modelli else
-              "Enter the API key above and the models found on it appear here."))
-    model_name = "" if _scelto == AUTOMATICO else _scelto
-    if api_key and _modelli:
-        st.sidebar.caption(f"{len(_modelli)} model{'s' if len(_modelli) != 1 else ''} found "
-                           f"on this key ({_fonte}), newest first.")
-    elif api_key:
-        st.sidebar.caption(f"No model list yet ({_fonte}). The chain falls back to the "
-                           "built-in list.")
-
-RAGIONAMENTO = {"Fast": "minimal", "Balanced": "low", "Thorough": "medium", "Deep": "high"}
-ragionamento = RAGIONAMENTO[st.sidebar.select_slider(
-    "Thinking time", options=list(RAGIONAMENTO), value="Balanced",
-    help="How much the model may think before answering. This is the biggest lever on how "
-         "long a run takes — more than the choice of model. If a model refuses the level you "
-         "pick, the app moves up one step for that model and carries on.")]
-
+# ── 2 · IL SORGENTE ───────────────────────────────────────────────────────
 ui.tappa("2", "Source code")
-uploaded_files = st.sidebar.file_uploader(
+caricati = st.sidebar.file_uploader(
     "Files", type=None, accept_multiple_files=True,
-    help="Any text file: PL/SQL, COBOL and copybooks, JCL, RPG and DDS, Visual Basic "
-         "(.vb, .bas, .frm, .cls), Java, C#, Python, PHP, Delphi, ABAP, shell scripts and "
-         "more. Extensions the app does not know are still analysed — the model reads the "
-         "content. Binary files are refused. Up to 2 MB per file.")
+    help="Any text file: PL/SQL, COBOL and copybooks, JCL, RPG and DDS, Visual Basic, Java, "
+         "C#, Python, PHP, Delphi, ABAP, shell scripts and more. Extensions the app does not "
+         "know are still analysed. Drop a JSON exported from this app here to resume a saved "
+         "analysis instead. Binary files are refused. Up to 2 MB per file.")
 with st.sidebar.expander("Or paste a snippet"):
     pasted_filename = st.text_input("File name", value="pasted_source.sql")
     pasted_code = st.text_area("Source", height=180,
                                placeholder="Paste code here to analyse it without uploading a file.")
 
-with st.sidebar.expander("Or resume a saved analysis"):
-    # Il lavoro dell'esperto — le spunte, le correzioni — vive nella sessione
-    # del browser, e una sessione si chiude. Il JSON esportato è l'unico posto
-    # dove sopravvive, e senza questo caricatore era un posto da cui non si
-    # tornava indietro.
-    st.caption("A JSON exported from the Export tab, ticks and corrections included.")
-    json_caricato = st.file_uploader("Saved analysis", type=["json"], accept_multiple_files=False)
-    if json_caricato is not None:
-        impronta_json = hashlib.sha256(json_caricato.getvalue()).hexdigest()[:16]
-        # Si carica UNA volta per file: il caricatore resta pieno a ogni giro
-        # della pagina, e ricaricare a ogni giro cancellerebbe le spunte messe
-        # dopo il caricamento.
-        if st.session_state.get("json_caricato") != impronta_json:
-            try:
-                risultato_caricato, metadati_caricati = carica_analisi_salvata(json_caricato.getvalue())
-                st.session_state.update({
-                    "analysis_result": risultato_caricato,
-                    "analysis_metadata": metadati_caricati,
-                    "analysis_sources": [],
-                    "analysis_provider": risultato_caricato.get("_provider", "saved file"),
-                    "analysis_model": risultato_caricato.get("_modello", "saved file"),
-                    "analysis_signature": "json:" + impronta_json,
-                    "json_caricato": impronta_json})
-                st.session_state.pop("pdf_bytes", None)
-                st.session_state.pop("docx_bytes", None)
-                st.success(f"Loaded: {len(risultato_caricato.get('business_rules', []))} business rules, "
-                           f"contract v{risultato_caricato.get('contract_version', '?')}.")
-            except Exception as e:  # noqa: BLE001
-                st.error(f"This file could not be loaded as an analysis: {e}")
+# Un'analisi salvata si riconosce da sola: è un JSON con dentro le sezioni del
+# contratto. Prima serviva un pannello a parte, e chi non lo trovava rifaceva
+# l'analisi da capo. Qui si guarda cosa contiene il file, non come si chiama.
+uploaded_files, analisi_caricate = [], []
+for _f in caricati or []:
+    if _f.name.lower().endswith(".json"):
+        try:
+            analisi_caricate.append((_f, carica_analisi_salvata(_f.getvalue())))
+            continue
+        except Exception:
+            pass   # un JSON qualunque resta un file da analizzare
+    uploaded_files.append(_f)
 
-with st.sidebar.expander("Dependencies"):
-    # Il bottone lancia lo stesso `avvia.py` della riga di comando, con
-    # `--solo-preparazione`: una via sola, nessuna logica di installazione
-    # duplicata qui dentro che poi si allontana da quella vera.
+if analisi_caricate:
+    _f, (_ris, _meta) = analisi_caricate[0]
+    _impronta = hashlib.sha256(_f.getvalue()).hexdigest()[:16]
+    if st.session_state.get("json_caricato") != _impronta:
+        st.session_state.update({
+            "analysis_result": _ris, "analysis_metadata": _meta, "analysis_sources": [],
+            "analysis_provider": _ris.get("_provider", "saved file"),
+            "analysis_model": _ris.get("_modello", "saved file"),
+            "analysis_signature": "json:" + _impronta, "json_caricato": _impronta})
+        st.session_state.pop("pdf_bytes", None)
+        st.session_state.pop("docx_bytes", None)
+        st.session_state.pop("lotti_stato", None)
+    st.sidebar.success(f"Resumed from {_f.name}: "
+                       f"{len(_ris.get('business_rules', []))} business rules, "
+                       f"contract v{_ris.get('contract_version', '?')}.")
+
+# ── 3 · L'AVVIO ───────────────────────────────────────────────────────────
+ui.tappa("3", "Run")
+_incompleto = bool((st.session_state.get("analysis_result") or {}).get("_incompleti"))
+run_analysis = st.sidebar.button(
+    "Analyse the application", type="primary", disabled=_incompleto, **ui.LARGA,
+    help=("The previous answer is not complete yet: use «Continue with the same model» "
+          "on the page, or clear the results." if _incompleto else None))
+if st.sidebar.button("Clear results", **ui.LARGA):
+    for key in ["analysis_result", "analysis_metadata", "analysis_sources",
+                "analysis_provider", "analysis_model", "analysis_signature",
+                "pdf_bytes", "docx_bytes", "lotti_stato", "json_caricato",
+                "continua_fallita"]:
+        st.session_state.pop(key, None)
+    st.rerun()
+
+# ── IMPOSTAZIONI DA ESPERTO ───────────────────────────────────────────────
+# Tutto quello che NON si tocca a ogni esecuzione sta qui dentro: i valori
+# predefiniti vanno bene nella maggior parte dei casi, e una barra laterale con
+# dieci controlli fa credere che vadano decisi tutti.
+with st.sidebar.expander("Expert settings"):
+    preferenza = "qualita" if st.radio(
+        "Pick models by", ["Quality", "Speed and cost"], index=0, horizontal=True,
+        help="Quality starts from the strongest models and falls back downwards. "
+             "Speed keeps only the fast ones."
+    ) == "Quality" else "velocita"
+
+    _modelli, _fonte = scopri_modelli(provider, api_key, azure_endpoint, preferenza)
+    _da_rete = _fonte.startswith("rete") or _fonte.startswith("discovery")
+    AUTOMATICO = "Automatic (the chain decides)"
+    if provider == "Microsoft Azure OpenAI" and (_da_rete or not _modelli):
+        # Su Azure l'elenco dei deployment richiede un permesso che la chiave
+        # può non avere. Se non si è potuto leggere, il nome si scrive a mano.
+        model_name = st.text_input(
+            "Deployment name", value=_predefinito or "gpt-4o",
+            help="The deployments on this endpoint could not be listed, so type the name. "
+                 "It stays first in the chain.")
+    else:
+        _opzioni = [AUTOMATICO] + _modelli
+        _indice = _opzioni.index(_predefinito) if _predefinito in _opzioni else 0
+        _scelto = st.selectbox(
+            "Preferred model", _opzioni, index=_indice, disabled=not api_key,
+            help=("Automatic: the chain starts from the best model found and falls back "
+                  "downwards. Pick one to start from that model instead; if it does not "
+                  "answer, the chain falls back to the others, best first." if _modelli else
+                  "Enter the API key above and the models found on it appear here."))
+        model_name = "" if _scelto == AUTOMATICO else _scelto
+        if api_key and _modelli:
+            st.caption(f"{len(_modelli)} model{'s' if len(_modelli) != 1 else ''} found on "
+                       f"this key ({_fonte}), newest first.")
+        elif api_key:
+            st.caption(f"No model list yet ({_fonte}). The chain falls back to the "
+                       "built-in list.")
+
+    RAGIONAMENTO = {"Fast": "minimal", "Balanced": "low", "Thorough": "medium", "Deep": "high"}
+    ragionamento = RAGIONAMENTO[st.select_slider(
+        "Thinking time", options=list(RAGIONAMENTO), value="Balanced",
+        help="How much the model may think before answering. This is the biggest lever on "
+             "how long a run takes. If a model refuses the level you pick, the app moves up "
+             "one step for that model and carries on.")]
+
+    profondita = "quick" if st.radio(
+        "Depth", ["Full", "Quick"], index=0, horizontal=True,
+        help="Quick asks for the sections that pay for the run and caps the answer at less "
+             "than half the size: roughly half the time. Impact analysis, application map "
+             "and assumptions stay empty; diagrams are drawn from the tables anyway."
+    ) == "Quick" else "full"
+
+    parallelismo = int(st.select_slider(
+        "Batches at once", options=[1, 2, 3, 4], value=2,
+        help="How many batches are sent to the model at the same time. More is faster on big "
+             "codebases, but eats your rate limit faster: on a free-tier key stay at 1 or 2."))
+
+    force_rerun = st.checkbox(
+        "Analyse again from scratch", value=False,
+        help="Off: batches whose files, settings and contract have not changed are read back "
+             "from the cache on disk instead of being paid for again.")
+
+    st.divider()
     _disegna = mermaid_render.prova_locale()
-    st.caption(("Diagrams are drawn on this machine." if _disegna else
-                "Diagrams are **not** drawn on this machine: their code would be sent to the "
-                "public mermaid.ink service. Everything else works."))
+    st.caption("Diagrams are drawn on this machine." if _disegna else
+               "Diagrams are **not** drawn on this machine: their code would be sent to the "
+               "public mermaid.ink service. Everything else works.")
     if st.button("Install what's missing", **ui.LARGA,
                  help="Runs the same setup as «python avvia.py»: Python packages and the "
-                      "local diagram renderer, including the browser it needs. "
-                      "The first run downloads a few hundred MB and takes a while."):
+                      "local diagram renderer, including the browser it needs. The first run "
+                      "downloads a few hundred MB and takes a while."):
         with st.spinner("Installing… this can take a few minutes the first time."):
             try:
                 esito = subprocess.run(
@@ -1635,37 +1673,6 @@ with st.sidebar.expander("Dependencies"):
         st.code(uscita[-3000:] or "no output", language="text")
         st.caption("New Python packages only take effect after the app is restarted. "
                    "The diagram renderer works straight away.")
-
-ui.tappa("3", "Run")
-profondita = "quick" if st.sidebar.radio(
-    "Depth", ["Full", "Quick"], index=0, horizontal=True,
-    help="The time a run takes is mostly the model WRITING its answer. Quick asks for "
-         "the sections that pay for the run — processes, rules, components, dependencies, "
-         "interfaces, data, risks, questions — and caps the answer at less than half the "
-         "size: roughly half the time. Impact analysis, application map and assumptions "
-         "stay empty; diagrams are drawn from the tables anyway."
-) == "Quick" else "full"
-parallelismo = int(st.sidebar.select_slider(
-    "Batches at once", options=[1, 2, 3, 4], value=2,
-    help="How many batches are sent to the model at the same time. More is faster on big "
-         "codebases, but eats your rate limit faster: on a free-tier key stay at 1 or 2."))
-force_rerun = st.sidebar.checkbox(
-    "Analyse again from scratch", value=False,
-    help="Off: batches whose files, settings and contract have not changed are read back "
-         "from the cache on disk instead of being paid for again — even across sessions.")
-# Finché un lotto è incompleto non si chiede una risposta nuova: si continua
-# quella. Il bottone resta visibile ma spento, con scritto perché.
-_incompleto = bool((st.session_state.get("analysis_result") or {}).get("_incompleti"))
-run_analysis = st.sidebar.button(
-    "Analyse the application", type="primary", disabled=_incompleto, **ui.LARGA,
-    help=("The previous answer is not complete yet: use «Continue with the same model» "
-          "on the page, or clear the results." if _incompleto else None))
-if st.sidebar.button("Clear results", **ui.LARGA):
-    for key in ["analysis_result", "analysis_metadata", "analysis_sources",
-                "analysis_provider", "analysis_model", "analysis_signature",
-                "pdf_bytes", "docx_bytes", "lotti_stato"]:
-        st.session_state.pop(key, None)
-    st.rerun()
 
 # =============================================================================
 # 10. LA PAGINA

@@ -1,4 +1,4 @@
-__version__ = "2026.09.16"
+__version__ = "2026.09.16b"
 
 import ast
 import builtins

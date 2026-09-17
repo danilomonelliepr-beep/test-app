@@ -1,0 +1,7 @@
+streamlit
+streamlit-mermaid
+sqlglot
+pandas
+requests
+reportlab
+python-docx

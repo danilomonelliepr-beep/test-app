@@ -1,4 +1,4 @@
-__version__ = "2026.09.18c"
+__version__ = "2026.09.18g"
 
 import ast
 import builtins
@@ -32,7 +32,7 @@ from model_chain import CatenaModelli, NessunModello
 # 1. PAGE CONFIGURATION
 # =============================================================================
 st.set_page_config(
-    page_title="Legacy Application Knowledge Extractor",
+    page_title="LAKE — Legacy Application Knowledge Extractor",
     page_icon="🧭",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -1893,9 +1893,9 @@ if sources:
 else:
     stato.append(ui.marca("No source loaded", "▤", "spenta"))
 
-ui.testata("Legacy Application Knowledge Extractor",
+ui.testata("LAKE: Legacy Application Knowledge Extractor",
            "Read a legacy codebase and hand a domain expert something they can check, "
-           "correct and sign.", stato)
+           "correct and sign.", stato, sigla=True)
 
 if run_analysis:
     if not sources:

@@ -1,4 +1,4 @@
-__version__ = "2026.09.16b"
+__version__ = "2026.09.17"
 
 import ast
 import builtins
@@ -18,6 +18,7 @@ import streamlit as st
 from sqlglot import exp
 from streamlit_mermaid import st_mermaid
 
+import binary_triage
 import contract
 import diagrams
 import mermaid_render
@@ -180,6 +181,45 @@ def source_hash(filename, content):
 # =============================================================================
 # 4. FILE INPUT FUNCTIONS
 # =============================================================================
+# =============================================================================
+# DA DOVE VIENE UN FILE: SORGENTE, DECOMPILATO, O RESOCONTO DI UN BINARIO
+# Tre cose diverse che l'estrattore legge allo stesso modo ma di cui NON deve
+# fidarsi allo stesso modo. Il sorgente vero l'ha scritto una persona: i nomi
+# significano qualcosa. Il codice decompilato l'ha scritto uno strumento: nomi
+# come `FUN_00401a30` o `uVar7` sono invenzioni sue, e un modello che li legge
+# li documenta con la stessa serietà del resto. L'applicazione è costruita
+# sull'idea opposta — un fatto inventato è peggio di uno mancante — quindi la
+# differenza va dichiarata al modello, segnata nelle righe e scritta nei
+# documenti.
+# =============================================================================
+SEGNI_DECOMPILATO = [
+    re.compile(r"\b(?:FUN|SUB)_[0-9a-f]{6,}\b"),            # Ghidra
+    re.compile(r"\bsub_[0-9A-F]{5,}\b"),                     # IDA
+    re.compile(r"\b[a-z]Var\d{1,3}\b"),                     # Ghidra: uVar3, iVar1
+    re.compile(r"\bDAT_[0-9a-f]{6,}\b|\bunk_[0-9A-F]{5,}\b"),
+    re.compile(r"\bloc_[0-9A-F]{5,}\b|\bLAB_[0-9a-f]{6,}\b"),
+    re.compile(r"undefined[48]? \w+|__fastcall|__stdcall|__cdecl"),
+    re.compile(r"/\* WARNING: (?:Globals|Subroutine|Removing)"),  # note di Ghidra
+    re.compile(r"\bv\d{1,3} = \*\(_[A-Z]", re.I),              # Hex-Rays
+]
+SOGLIA_DECOMPILATO = 3   # quanti segni diversi servono per dirlo
+
+
+def riconosci_provenienza(contenuto):
+    """`sorgente` o `decompilato`. Servono più segni diversi: un file vero può
+    contenere `sub_`, tre marche diverse di decompilatore no."""
+    quanti = sum(1 for regola in SEGNI_DECOMPILATO if regola.search(contenuto))
+    return "decompilato" if quanti >= SOGLIA_DECOMPILATO else "sorgente"
+
+
+class BinarioDaEsaminare(Exception):
+    """Non è un errore: è un eseguibile, e va esaminato invece che letto."""
+
+    def __init__(self, nome, dati):
+        super().__init__(nome)
+        self.nome, self.dati = nome, dati
+
+
 def decode_uploaded_file(uploaded_file):
     raw_content = uploaded_file.getvalue()
     if len(raw_content) > MAX_FILE_SIZE_BYTES:
@@ -188,6 +228,11 @@ def decode_uploaded_file(uploaded_file):
     # un byte nullo nei primi 8 KB vuol dire un binario (.dll, .fmb, .pbl…),
     # e un binario decodificato a forza sarebbe spazzatura mandata al modello.
     if b"\x00" in raw_content[:8000]:
+        # Un binario non si butta: se è un eseguibile si esamina, e il
+        # resoconto — che è testo — prende il suo posto. Quando il sorgente è
+        # andato perso è l'unica cosa che resta, ed è meglio di niente.
+        if raw_content[:2] in (b"MZ", b"PK") or raw_content[:4] in (b"\x7fELF", b"\xca\xfe\xba\xbe"):
+            raise BinarioDaEsaminare(uploaded_file.name, raw_content)
         raise ValueError(f"{uploaded_file.name} looks like a binary file, not source code. "
                          "Export the source as text first (for example .fmb → .fmt, .pbl → .sr*).")
 
@@ -202,11 +247,21 @@ def decode_uploaded_file(uploaded_file):
 def build_source_collection(uploaded_files, pasted_code, pasted_filename):
     sources = []
     for uploaded_file in uploaded_files or []:
-        content = decode_uploaded_file(uploaded_file)
+        try:
+            content = decode_uploaded_file(uploaded_file)
+            provenienza = riconosci_provenienza(content)
+            lingua = detect_language_from_filename(uploaded_file.name)
+        except BinarioDaEsaminare as binario:
+            # L'eseguibile diventa il resoconto del suo esame: stesso posto
+            # nell'elenco, natura dichiarata.
+            content = binary_triage.resoconto(
+                binary_triage.esamina(binario.dati, nome=binario.nome))
+            provenienza, lingua = "esame", f"Binary triage report ({binario.nome})"
         sources.append({
             "filename": uploaded_file.name,
-            "language": detect_language_from_filename(uploaded_file.name),
+            "language": lingua,
             "content": content,
+            "provenienza": provenienza,
             "hash": source_hash(uploaded_file.name, content)
         })
 
@@ -216,6 +271,7 @@ def build_source_collection(uploaded_files, pasted_code, pasted_filename):
             "filename": filename,
             "language": detect_language_from_filename(filename),
             "content": pasted_code,
+            "provenienza": riconosci_provenienza(pasted_code),
             "hash": source_hash(filename, pasted_code)
         })
 
@@ -850,7 +906,9 @@ def extract_technical_metadata(sources):
         "dependencies": unique_dicts(all_deps, ["source", "target", "dependency_type"]),
         "interfaces": unique_dicts(all_ints, ["name", "interface_type", "source_file"]),
         "data_objects": unique_dicts(all_objs, ["object_name", "operation", "source_file"]),
-        "local_risks": all_risks, "files": file_metadata
+        "local_risks": all_risks, "files": file_metadata,
+        "provenienza_file": {s["filename"]: s.get("provenienza", "sorgente")
+                             for s in sources},
     }
     return resolve_dependencies(metadati)
 
@@ -957,12 +1015,44 @@ def continua_lotto(catena, stato, ragionamento, modello=None):
     return nuovo
 
 
+def nota_provenienza(sources):
+    """La riga da mettere nel prompt quando nel lotto c'è roba che non è
+    sorgente scritto da una persona. Usa il gancio `note` che il contratto ha
+    già: nessun campo nuovo, nessuna versione del contratto da cambiare."""
+    decompilati = [s["filename"] for s in sources if s.get("provenienza") == "decompilato"]
+    esami = [s["filename"] for s in sources if s.get("provenienza") == "esame"]
+    if not decompilati and not esami:
+        return ""
+    righe = ["", "WHERE THESE FILES COME FROM — read this before you start."]
+    if decompilati:
+        righe += [
+            f"· DECOMPILED, not written by a person: {', '.join(decompilati)}.",
+            "  Names like FUN_00401a30, sub_4012F0, uVar7, DAT_00420a18 were invented by",
+            "  the decompiler and mean nothing. NEVER present them as component, table or",
+            "  variable names, and never build a business rule out of them. Use what is",
+            "  real in there — string literals, API calls, SQL text, numeric constants —",
+            "  and set confidence to LOW or MEDIUM for anything that rests on a generated",
+            "  name. Say in `evidence` that the row comes from decompiled code.",
+        ]
+    if esami:
+        righe += [
+            f"· BINARY TRIAGE REPORTS, not source at all: {', '.join(esami)}.",
+            "  These describe an executable whose source is lost: linked libraries, strings,",
+            "  build technology. You may document what the strings and libraries prove (a",
+            "  query, a connection string, an Oracle client) but there is no logic to read:",
+            "  do not invent processes or rules from them. confidence LOW unless a literal",
+            "  string says it outright.",
+        ]
+    return "\n".join(righe) + "\n"
+
+
 def analyze_batch(catena, provider, sources, metadata, lotto, profondita="full",
                   ragionamento="low", chiave=""):
     """Un lotto: la domanda, poi le continuazioni automatiche finché la
     risposta non è completa o non si è esaurita la pazienza automatica."""
     prompt = contract.prompt_analisi(sources, metadata_for_prompt(metadata, sources),
-                                     lotto=lotto, profondita=profondita)
+                                     lotto=lotto, profondita=profondita,
+                                     note=nota_provenienza(sources))
     risposta = ask_model(catena, prompt, provider, profondita)
     stato = stato_lotto(prompt, risposta.testo, risposta.modello, risposta.troncata, 0,
                         sources, lotto, profondita, chiave)
@@ -1032,6 +1122,7 @@ def merge_static_and_ai_results(ai_result, metadata):
     for nome, righe in statiche.items():
         r[nome] = contract.unisci_righe(nome, r.get(nome, []), righe)
     r = contract.numera_id(r)
+    r = abbassa_confidenza_non_sorgente(r, metadata.get("provenienza_file") or {})
     # I diagrammi si costruiscono DOPO l'unione, così il call graph contiene
     # anche le dipendenze trovate dal parser, non solo quelle viste dal modello.
     return diagrams.arricchisci(r)
@@ -1068,6 +1159,39 @@ def carica_analisi_salvata(grezzo_bytes):
     # I diagrammi si ricostruiscono dai dati se il file non li portava: un
     # JSON vecchio ne ha al massimo quelli del modello.
     return diagrams.arricchisci(risultato), metadati
+
+
+def abbassa_confidenza_non_sorgente(risultato, provenienza_file):
+    """Nessuna riga che nasce da codice decompilato o dal resoconto di un
+    binario può dichiararsi ad alta confidenza.
+
+    Non è pessimismo: è che il modello non ha modo di sapere che `FUN_00401a30`
+    non è un nome vero, e una riga `HIGH` in un documento che qualcuno firma
+    vale come un fatto. Il tetto lo mette il codice, che invece lo sa."""
+    da_guardare = {f for f, p in provenienza_file.items() if p in ("decompilato", "esame")}
+    if not da_guardare:
+        return risultato
+    toccate = 0
+    for nome in contract.CAMPI:
+        for riga in risultato.get(nome, []) or []:
+            origine = str(riga.get("source_file") or riga.get("affected_component") or "").strip()
+            if origine not in da_guardare:
+                continue
+            if str(riga.get("confidence", "")).upper() == "HIGH":
+                riga["confidence"] = "MEDIUM"
+                toccate += 1
+            marca = ("from decompiled code" if provenienza_file[origine] == "decompilato"
+                     else "from a binary triage report")
+            if marca not in str(riga.get("evidence", "")):
+                riga["evidence"] = (str(riga.get("evidence", "")).strip()
+                                    + (" · " if riga.get("evidence") else "") + marca)[:1500]
+    if toccate:
+        avvisi = list(risultato.get("contract_warnings") or [])
+        avvisi.append(f"{toccate} row(s) coming from decompiled code or a triage report were "
+                      "capped at MEDIUM confidence: names in those files are the tool's, "
+                      "not the program's")
+        risultato["contract_warnings"] = avvisi
+    return risultato
 
 
 def analysis_signature(sources, provider, model_name, preferenza, profondita="full"):
@@ -1688,6 +1812,13 @@ stato.append(ui.marca(provider.replace("Microsoft ", "").replace("Anthropic ", "
                       "accesa" if api_key else "spenta"))
 stato.append(ui.marca("API key set" if api_key else "API key missing", "⌁",
                       "ok" if api_key else "alta"))
+if sources and any(s.get("provenienza") in ("decompilato", "esame") for s in sources):
+    _quali = ", ".join(f"{s['filename']} ({s['provenienza']})" for s in sources
+                       if s.get("provenienza") in ("decompilato", "esame"))
+    st.info("Some of what you loaded is not source written by a person: " + _quali
+            + ". Names produced by a decompiler mean nothing, so the model is told to "
+              "ignore them and no row from these files can claim high confidence.")
+
 if sources:
     caratteri = sum(len(s["content"]) for s in sources)
     lotti = len(split_into_batches(sources))
@@ -1695,6 +1826,12 @@ if sources:
                           f" · {caratteri:,} characters", "▤"))
     if lotti > 1:
         stato.append(ui.marca(f"{lotti} batches", "▥"))
+    _decomp = sum(1 for s_ in sources if s_.get("provenienza") == "decompilato")
+    _esami = sum(1 for s_ in sources if s_.get("provenienza") == "esame")
+    if _decomp:
+        stato.append(ui.marca(f"{_decomp} decompiled", "◍", "alta"))
+    if _esami:
+        stato.append(ui.marca(f"{_esami} binary report", "◍", "alta"))
 else:
     stato.append(ui.marca("No source loaded", "▤", "spenta"))
 

@@ -1,4 +1,4 @@
-__version__ = "2026.09.17"
+__version__ = "2026.09.18c"
 
 import ast
 import builtins
@@ -113,6 +113,14 @@ LINGUAGGI = {
 SUPPORTED_EXTENSIONS = sorted(e.lstrip(".") for e in LINGUAGGI)
 
 MAX_FILE_SIZE_BYTES = 2 * 1024 * 1024
+# Un eseguibile non entra mai per intero nel prompt: se ne estrae un resoconto
+# di dimensione fissa — intestazione, tabella import, un tetto di stringhe —
+# quindi il limite pensato per il testo sorgente (che invece finisce per
+# intero nella chiamata al modello) non ha senso per lui. Allineato al tetto
+# che Streamlit stesso impone al caricamento (`server.maxUploadSize`, in
+# `ui.imposta_tema_streamlit`): oltre quella soglia il file non arriva
+# nemmeno qui, quindi renderlo più permissivo di così non servirebbe.
+MAX_BINARY_SIZE_BYTES = 50 * 1024 * 1024
 MAX_TOTAL_SOURCE_CHARS = 1_500_000      # con l'analisi a lotti il tetto di una
                                         # singola chiamata non è più il tetto
                                         # dell'applicazione
@@ -222,17 +230,26 @@ class BinarioDaEsaminare(Exception):
 
 def decode_uploaded_file(uploaded_file):
     raw_content = uploaded_file.getvalue()
-    if len(raw_content) > MAX_FILE_SIZE_BYTES:
-        raise ValueError(f"{uploaded_file.name} exceeds the allowed size.")
-    # Il caricatore accetta tutto, quindi il controllo che sia TESTO sta qui:
-    # un byte nullo nei primi 8 KB vuol dire un binario (.dll, .fmb, .pbl…),
-    # e un binario decodificato a forza sarebbe spazzatura mandata al modello.
-    if b"\x00" in raw_content[:8000]:
+    # Le firme di un eseguibile si guardano PRIMA del limite pensato per il
+    # testo. Prima l'ordine era invertito: una .dll vera, spesso più pesante
+    # di un singolo file .cs, veniva respinta per la dimensione ancora prima
+    # che il codice scoprisse che era un eseguibile esaminabile — bloccata dal
+    # tetto sbagliato, quello del sorgente, non dal suo.
+    if raw_content[:2] in (b"MZ", b"PK") or raw_content[:4] in (b"\x7fELF", b"\xca\xfe\xba\xbe"):
+        if len(raw_content) > MAX_BINARY_SIZE_BYTES:
+            raise ValueError(f"{uploaded_file.name} exceeds the allowed size for an executable "
+                             f"({MAX_BINARY_SIZE_BYTES // (1024 * 1024)} MB).")
         # Un binario non si butta: se è un eseguibile si esamina, e il
         # resoconto — che è testo — prende il suo posto. Quando il sorgente è
         # andato perso è l'unica cosa che resta, ed è meglio di niente.
-        if raw_content[:2] in (b"MZ", b"PK") or raw_content[:4] in (b"\x7fELF", b"\xca\xfe\xba\xbe"):
-            raise BinarioDaEsaminare(uploaded_file.name, raw_content)
+        raise BinarioDaEsaminare(uploaded_file.name, raw_content)
+    if len(raw_content) > MAX_FILE_SIZE_BYTES:
+        raise ValueError(f"{uploaded_file.name} exceeds the allowed size.")
+    # Il caricatore accetta tutto, quindi il controllo che sia TESTO sta qui:
+    # un byte nullo nei primi 8 KB vuol dire un binario che non è un
+    # eseguibile riconosciuto (.fmb, .pbl…), e un binario decodificato a
+    # forza sarebbe spazzatura mandata al modello.
+    if b"\x00" in raw_content[:8000]:
         raise ValueError(f"{uploaded_file.name} looks like a binary file, not source code. "
                          "Export the source as text first (for example .fmb → .fmt, .pbl → .sr*).")
 
@@ -865,6 +882,16 @@ def analyze_single_source_locally(source):
         # conferma, non a sostituire la ricerca.
         dependencies.extend(extract_probable_calls(
             code, filename, components, certi=nomi_chiamati_sql(code)))
+    elif source.get("provenienza") == "esame":
+        # Un resoconto d'esame binario è prosa, non codice: la ricerca
+        # generica «parola seguita da parentesi» prendeva le INTESTAZIONI del
+        # resoconto stesso — «LINKED LIBRARIES (», «STRINGS — PATH (» — come
+        # se fossero chiamate di funzione. Non era il modello a inventare
+        # `LIBRARIES` o `PERCORSO`: era la nostra stessa analisi statica a
+        # mordersi la coda, leggendo il proprio referto come se fosse codice.
+        # Gli import veri (le DLL linkate) sono già catturati altrove, con un
+        # pattern esplicito che non soffre di questo problema.
+        pass
     else:
         dependencies.extend(extract_probable_calls(code, filename, components))
     sql_metadata = extract_sql_metadata(code, filename)
@@ -983,6 +1010,7 @@ def stato_lotto(prompt, testo, modello, troncata, giri, sources, lotto, profondi
         grezzo = contract.estrai_json(testo)
     except ValueError:
         grezzo = {}
+    grezzo = forza_provenienza_modello(grezzo)
     risultato = contract.normalizza(grezzo, avvisi, saltate=saltate)
     risultato["_modello"] = modello
     return {"prompt": prompt, "testo": testo, "modello": modello, "troncata": troncata,
@@ -1044,6 +1072,26 @@ def nota_provenienza(sources):
             "  string says it outright.",
         ]
     return "\n".join(righe) + "\n"
+
+
+def forza_provenienza_modello(grezzo):
+    """Prima che il risultato del modello incontri quello del parser, il campo
+    `source` di `components` e `technical_risks` viene azzerato a
+    `LLM_ANALYSIS`, qualunque cosa il modello ci abbia scritto.
+
+    CORRETTO: il modello può scrivere da sé `"source": "STATIC_ANALYSIS"` nella
+    propria risposta — è un campo del contratto come un altro — e nessuno lo
+    controllava. Il documento poi mostra «Found by: parser» per quella riga,
+    la stessa etichetta che dice «un fatto che non può sbagliare». Solo la
+    fusione con l'analisi statica (`merge_static_and_ai_results`, più avanti)
+    ha il permesso di scrivere `STATIC_ANALYSIS`, perché è l'unico punto in cui
+    quell'etichetta corrisponde a qualcosa che il PARSER ha prodotto per
+    davvero. A monte di qui c'è solo la risposta del modello: ogni riga è sua."""
+    for nome in ("components", "technical_risks"):
+        for riga in (grezzo.get(nome) if isinstance(grezzo, dict) else None) or []:
+            if isinstance(riga, dict) and "source" in riga:
+                riga["source"] = "LLM_ANALYSIS"
+    return grezzo
 
 
 def analyze_batch(catena, provider, sources, metadata, lotto, profondita="full",
@@ -1167,15 +1215,24 @@ def abbassa_confidenza_non_sorgente(risultato, provenienza_file):
 
     Non è pessimismo: è che il modello non ha modo di sapere che `FUN_00401a30`
     non è un nome vero, e una riga `HIGH` in un documento che qualcuno firma
-    vale come un fatto. Il tetto lo mette il codice, che invece lo sa."""
+    vale come un fatto. Il tetto lo mette il codice, che invece lo sa.
+
+    CORRETTO: prima si guardava solo `source_file` e `affected_component`, e
+    quei due nomi non esistono in `data_flows` (che usa `source`/`target`), in
+    `application_mapping` (`source_component`) né in `impact_analysis`
+    (`affected_components`, al plurale). Righe di quelle tre sezioni nate da
+    un unico file d'esame restavano a `HIGH` — proprio la cosa che il banner
+    dell'app promette non succeda mai. Ora si guarda OGNI valore della riga: se
+    il nome del file compare da qualche parte, la riga è sua."""
     da_guardare = {f for f, p in provenienza_file.items() if p in ("decompilato", "esame")}
     if not da_guardare:
         return risultato
     toccate = 0
     for nome in contract.CAMPI:
         for riga in risultato.get(nome, []) or []:
-            origine = str(riga.get("source_file") or riga.get("affected_component") or "").strip()
-            if origine not in da_guardare:
+            testo_riga = " ".join(str(v) for v in riga.values())
+            origine = next((f for f in da_guardare if f and f in testo_riga), None)
+            if origine is None:
                 continue
             if str(riga.get("confidence", "")).upper() == "HIGH":
                 riga["confidence"] = "MEDIUM"
@@ -1661,7 +1718,8 @@ caricati = st.sidebar.file_uploader(
     help="Any text file: PL/SQL, COBOL and copybooks, JCL, RPG and DDS, Visual Basic, Java, "
          "C#, Python, PHP, Delphi, ABAP, shell scripts and more. Extensions the app does not "
          "know are still analysed. Drop a JSON exported from this app here to resume a saved "
-         "analysis instead. Binary files are refused. Up to 2 MB per file.")
+         "analysis instead. Executables (.exe, .dll) are examined rather than read as code, "
+         "up to 50 MB; other files up to 2 MB.")
 with st.sidebar.expander("Or paste a snippet"):
     pasted_filename = st.text_input("File name", value="pasted_source.sql")
     pasted_code = st.text_area("Source", height=180,

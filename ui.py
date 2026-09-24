@@ -1,0 +1,627 @@
+"""
+═══════════════════════════════════════════════════════════════════════════
+L'INTERFACCIA — tema, componenti, e il sistema dei marcatori.
+
+Il mestiere di questa applicazione non è mostrare dati: è far giudicare a una
+persona delle righe prodotte da una macchina. Quindi la cosa che l'interfaccia
+deve dire meglio di tutto è **da dove viene ogni riga e quanto è solida** —
+fatto del parser o inferenza del modello, confermata da un esperto o ancora da
+guardare. È lì che va speso il poco colore che c'è; tutto il resto sta zitto.
+
+Scelte, e perché:
+
+· CARATTERE. IBM Plex Sans e IBM Plex Mono. Non è un vezzo: questa applicazione
+  documenta COBOL, RPG e PL/SQL, e Plex è il carattere dell'azienda le cui
+  macchine fanno girare quella roba. Il monospazio è riservato a ciò che è
+  letterale — nomi di componenti, file, frammenti di codice — così la differenza
+  fra «testo scritto da qualcuno» e «stringa presa dal sorgente» si vede senza
+  doverla leggere.
+
+· COLORE. Inchiostro blu-nero su carta grigio-fredda, accento verde-petrolio.
+  L'accento non è mai portatore di significato: serve solo a dire dove si può
+  cliccare. Il significato sta nella scala di gravità, che è l'unica cosa calda
+  della pagina e per questo si vede subito.
+
+· MAI IL COLORE DA SOLO. Ogni marcatore porta una forma e una parola oltre al
+  colore: un daltonico e uno schermo in bianco e nero devono leggere la stessa
+  cosa. Vale anche nelle tabelle, dove gli enum sono menù a tendina con la
+  parola scritta per esteso.
+
+· MOTO. Nessuna animazione d'ingresso, nessuna transizione sulle schede. Le
+  uniche transizioni sono quelle che rispondono a un gesto (un bottone che si
+  scurisce quando ci passi sopra), e si spengono da sole con
+  `prefers-reduced-motion`.
+
+Tutti i componenti nuovi verificano prima che Streamlit li sappia fare: se
+un'installazione è più vecchia, l'interfaccia perde un bordo, non una funzione.
+═══════════════════════════════════════════════════════════════════════════
+"""
+
+from __future__ import annotations
+
+__version__ = "2026.09.23b"
+
+import html
+import inspect
+from typing import Any, Dict, List, Optional
+
+import streamlit as st
+
+# ── Larghezza piena, senza avvisi di obsolescenza ─────────────────────────
+# Streamlit ha sostituito `use_container_width=True` con `width="stretch"`, e
+# il vecchio nome è in via di rimozione. Si guarda la firma vera invece di
+# confrontare numeri di versione: funziona anche sulle versioni in mezzo.
+def _accetta_width(funzione) -> bool:
+    try:
+        return "width" in inspect.signature(funzione).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+LARGA = {"width": "stretch"} if _accetta_width(st.button) else {"use_container_width": True}
+
+# =============================================================================
+# I TOKEN — tutto il colore e tutta la spaziatura stanno qui.
+# I valori sono scelti per il contrasto: inchiostro su carta è 13:1, l'accento
+# su bianco è 5,6:1, ogni testo di stato sul proprio fondo supera 4,5:1.
+# =============================================================================
+TEMA = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+:root {
+  --inchiostro:  #17212B;
+  --inchiostro-2:#4A5A6B;
+  --carta:       #F1F4F7;
+  --superficie:  #FFFFFF;
+  --sfondo-lato: #F6F8FA;
+  --riga:        #D4DCE4;
+  --accento:     #15616D;
+  --accento-cupo:#0E434C;
+  --critico:     #9B2226;
+  --alto:        #9A5B00;
+  --medio:       #3F5265;
+  --basso:       #6B7A89;
+  --conferma:    #1F6B45;
+  --r:           6px;
+}
+
+/* ── base ─────────────────────────────────────────────────────────────── */
+html, body, [class*="css"], .stApp {
+  font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  color: var(--inchiostro);
+}
+.stApp { background: var(--carta); }
+.block-container { padding-top: 2.2rem; padding-bottom: 4rem; max-width: 1320px; }
+p, li { font-size: 0.95rem; line-height: 1.62; }
+h1, h2, h3, h4 { font-weight: 600; letter-spacing: -0.01em; color: var(--inchiostro); }
+h1 { font-size: 1.75rem; }
+h2 { font-size: 1.25rem; margin-top: 1.6rem; }
+h3 { font-size: 1.02rem; }
+a { color: var(--accento); }
+code, kbd, pre, .stCode { font-family: 'IBM Plex Mono', ui-monospace, monospace; }
+
+/* ── testata ──────────────────────────────────────────────────────────── */
+.testata { border-bottom: 2px solid var(--inchiostro); padding-bottom: 0.9rem;
+           margin-bottom: 1.1rem; }
+.testata h1 { margin: 0 0 0.25rem 0; }
+/* L'iniziale di ogni parola del titolo: il nome del prodotto — Legacy
+   Application Knowledge Extractor — si legge anche come sigla, LAKE. */
+.testata h1 .sigla { color: var(--accento); }
+/* Il banner al posto del titolo scritto. Angoli arrotondati come il resto
+   dell'interfaccia; nessun bordo, perché l'immagine è scura e su carta
+   chiara si stacca già da sé. `display:block` toglie lo spazio che il
+   browser lascia sotto un'immagine trattata come testo. */
+.testata svg { display: block; width: 100%; height: auto;
+               border-radius: var(--r); margin: 0 0 0.55rem 0; }
+/* Il titolo resta nella pagina per chi la ascolta invece di guardarla:
+   fuori dallo schermo, non `display:none`, che lo toglierebbe anche a loro. */
+.solo-lettori { position: absolute; width: 1px; height: 1px; padding: 0;
+                margin: -1px; overflow: hidden; clip: rect(0 0 0 0);
+                white-space: nowrap; border: 0; }
+.testata .compito { color: var(--inchiostro-2); font-size: 0.95rem; margin: 0;
+                    max-width: 64ch; }
+
+/* ── marcatori: forma + parola + colore, mai il colore da solo ────────── */
+.fila { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+.fila > * { margin: 0 0.12rem 0.12rem 0; }   /* riserva se `gap` non è supportato */
+.marca { display: inline-flex; align-items: center; gap: 0.32rem;
+         border: 1px solid var(--riga); border-radius: 999px;
+         padding: 0.14rem 0.6rem; font-size: 0.78rem; font-weight: 500;
+         background: var(--superficie); color: var(--inchiostro-2);
+         white-space: nowrap; }
+.marca .segno { font-family: 'IBM Plex Mono', monospace; font-weight: 600;
+                margin-right: 0.18rem; }
+.marca.accesa   { border-color: var(--accento); color: var(--accento-cupo);
+                  background: #E8F1F2; }
+.marca.critica  { border-color: var(--critico); color: var(--critico); background: #FDF0F0; }
+.marca.alta     { border-color: var(--alto);    color: var(--alto);    background: #FDF5E8; }
+.marca.ok       { border-color: var(--conferma);color: var(--conferma);background: #ECF6F1; }
+.marca.spenta   { opacity: 0.75; }
+
+/* ── cifre di sintesi ─────────────────────────────────────────────────── */
+.cifre { display: flex; flex-wrap: wrap; gap: 0.55rem; margin: 0.2rem 0 0.9rem 0; }
+.cifre > * { margin: 0 0.15rem 0.15rem 0; }
+.cifra { flex: 1 1 130px; background: var(--superficie); border: 1px solid var(--riga);
+         border-radius: var(--r); padding: 0.65rem 0.8rem; }
+.cifra .valore { font-size: 1.45rem; font-weight: 600; line-height: 1.15;
+                 font-family: 'IBM Plex Mono', monospace; }
+.cifra .voce  { font-size: 0.78rem; color: var(--inchiostro-2); margin-top: 0.15rem; }
+.cifra .nota  { font-size: 0.72rem; color: var(--basso); margin-top: 0.2rem; }
+.cifra.rilievo { border-left: 3px solid var(--accento); }
+
+/* ── intestazione di sezione ──────────────────────────────────────────── */
+.sezione { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap;
+           margin: 0.2rem 0 0.15rem 0; }
+.sezione .nome { font-size: 1.08rem; font-weight: 600; }
+.sezione .conto { font-family: 'IBM Plex Mono', monospace; font-size: 0.82rem;
+                  color: var(--inchiostro-2); margin-left: 0.45rem; }
+.spiega { color: var(--inchiostro-2); font-size: 0.86rem; margin: 0 0 0.5rem 0;
+          max-width: 76ch; }
+
+/* barra di validazione: la quota confermata, non una decorazione */
+.avanza { height: 6px; background: #E3E9EF; border-radius: 999px; overflow: hidden;
+          margin: 0.15rem 0 0.55rem 0; max-width: 320px; }
+.avanza > span { display: block; height: 100%; background: var(--conferma); }
+
+/* ── stato vuoto: un invito, non un'alzata di spalle ──────────────────── */
+.vuoto { background: var(--superficie); border: 1px solid var(--riga);
+         border-radius: var(--r); padding: 1.5rem 1.6rem; max-width: 760px; }
+.vuoto h3 { margin: 0 0 0.5rem 0; }
+.vuoto p { color: var(--inchiostro-2); margin: 0 0 1rem 0; max-width: 62ch; }
+.passi { list-style: none; padding: 0; margin: 0; counter-reset: passo; }
+.passi li { counter-increment: passo; padding: 0.5rem 0 0.5rem 2.2rem; position: relative;
+            border-top: 1px solid var(--riga); font-size: 0.92rem; }
+.passi li:before { content: counter(passo); position: absolute; left: 0; top: 0.45rem;
+                   width: 1.5rem; height: 1.5rem; border-radius: 50%;
+                   background: var(--inchiostro); color: #fff; font-size: 0.78rem;
+                   font-family: 'IBM Plex Mono', monospace;
+                   display: flex; align-items: center; justify-content: center; }
+.passi b { font-weight: 600; }
+
+/* ── schede ───────────────────────────────────────────────────────────── */
+.stTabs [data-baseweb="tab-list"] { gap: 0.1rem; border-bottom: 1px solid var(--riga); }
+.stTabs [data-baseweb="tab"] { height: 44px; padding: 0 0.9rem; font-size: 0.92rem;
+                               font-weight: 500; color: var(--inchiostro-2); }
+.stTabs [aria-selected="true"] { color: var(--accento-cupo); font-weight: 600; }
+
+/* ── controlli ────────────────────────────────────────────────────────── */
+div.stButton > button, div.stDownloadButton > button {
+  min-height: 42px; border-radius: var(--r); font-weight: 500;
+  border: 1px solid var(--riga); background: var(--superficie); color: var(--inchiostro);
+}
+div.stButton > button:hover, div.stDownloadButton > button:hover {
+  border-color: var(--accento); color: var(--accento-cupo); }
+div.stButton > button[kind="primary"] {
+  background: var(--accento); border-color: var(--accento); color: #fff; }
+div.stButton > button[kind="primary"]:hover {
+  background: var(--accento-cupo); border-color: var(--accento-cupo); color: #fff; }
+
+/* ── I CAMPI IN CUI SI SCRIVE ──────────────────────────────────────────
+   Un bordo che si vede, un fondo bianco, e l'accento quando ci passi sopra o
+   ci entri col tasto tab. Di serie i campi di Streamlit hanno un bordo
+   quasi invisibile e lo stesso fondo del contenitore: nella barra laterale
+   bianca sparivano del tutto, e non si capiva dove andasse scritto. */
+[data-testid="stSidebar"] [data-baseweb="input"],
+[data-testid="stSidebar"] [data-baseweb="textarea"],
+[data-testid="stSidebar"] [data-baseweb="select"] > div,
+[data-baseweb="input"], [data-baseweb="textarea"], [data-baseweb="select"] > div {
+  background: var(--superficie) !important;
+  border: 1px solid var(--riga) !important;
+  border-radius: var(--r) !important;
+  transition: border-color .12s ease;
+}
+[data-baseweb="input"] input, [data-baseweb="textarea"] textarea { background: transparent !important; }
+[data-baseweb="input"]:hover, [data-baseweb="textarea"]:hover,
+[data-baseweb="select"] > div:hover { border-color: var(--accento) !important; }
+[data-baseweb="input"]:focus-within, [data-baseweb="select"]:focus-within,
+[data-baseweb="textarea"]:focus-within { border-color: var(--accento) !important;
+                                         box-shadow: 0 0 0 1px var(--accento) !important; }
+/* l'area di caricamento: lo stesso trattamento, così si vede che è un bersaglio */
+[data-testid="stFileUploaderDropzone"] { border: 1px dashed var(--riga) !important;
+                                         background: var(--superficie) !important;
+                                         border-radius: var(--r) !important; }
+[data-testid="stFileUploaderDropzone"]:hover { border-color: var(--accento) !important; }
+/* i pannelli richiudibili nella barra laterale: bianchi come i campi */
+[data-testid="stSidebar"] [data-testid="stExpander"] { background: var(--superficie); }
+
+/* il fuoco da tastiera si vede sempre, su tutto */
+:where(button, input, select, textarea, a, [role="tab"], [role="checkbox"]):focus-visible {
+  outline: 3px solid var(--accento); outline-offset: 2px; border-radius: 3px; }
+
+/* ── barra laterale ───────────────────────────────────────────────────── */
+/* Leggermente tinta, non bianca: i campi di inserimento sono bianchi, e su
+   bianco sparivano. Il bordo da solo non bastava — serve anche lo stacco fra
+   il campo e quello che gli sta intorno. */
+[data-testid="stSidebar"] { background: var(--sfondo-lato); border-right: 1px solid var(--riga); }
+[data-testid="stSidebar"] .block-container { padding-top: 1.2rem; }
+.tappa { font-size: 0.72rem; font-weight: 600; color: var(--accento-cupo);
+         letter-spacing: 0.02em; margin: 1.1rem 0 0.15rem 0;
+         display: flex; align-items: center; gap: 0.4rem; }
+.tappa span { font-family: 'IBM Plex Mono', monospace; background: #E8F1F2;
+              border-radius: 3px; padding: 0 0.32rem; }
+
+/* ── tabelle: il monospazio dove il contenuto è letterale ─────────────── */
+[data-testid="stDataFrame"], [data-testid="stDataEditor"] { font-size: 0.86rem; }
+[data-testid="stDataFrame"] div, [data-testid="stDataEditor"] div { font-feature-settings: 'tnum'; }
+
+/* ── contenitori e riquadri ───────────────────────────────────────────── */
+[data-testid="stExpander"] { border: 1px solid var(--riga); border-radius: var(--r);
+                             background: var(--superficie); }
+[data-testid="stExpander"] summary { font-weight: 500; min-height: 42px; }
+.nota-riquadro { background: var(--superficie); border: 1px solid var(--riga);
+                 border-left: 3px solid var(--basso); border-radius: var(--r);
+                 padding: 0.7rem 0.9rem; font-size: 0.86rem; color: var(--inchiostro-2);
+                 margin: 0.4rem 0; }
+
+/* ═══ I CONTROLLI DI STREAMLIT ══════════════════════════════════════════
+   Cursori, caselle, interruttori e bordi di fuoco prendono il colore dal tema
+   di Streamlit, che è una configurazione esterna al codice. Qui gli stessi
+   colori vengono riapplicati via CSS, che viaggia dentro `ui.py`: comunque si
+   avvii l'applicazione — con `avvia.py` o con `streamlit run app.py` a mano —
+   l'accento è il nostro e non il rosso di serie, che litigherebbe con la scala
+   di gravità. */
+[data-testid="stSlider"] [data-baseweb="slider"] div[role="slider"] { background: var(--accento) !important; }
+[data-testid="stSlider"] [data-baseweb="slider"] > div > div > div:first-child { background: var(--accento) !important; }
+[data-testid="stCheckbox"] [data-baseweb="checkbox"] span[aria-hidden="true"],
+[data-baseweb="checkbox"] span[data-checked="true"] { background-color: var(--accento) !important;
+                                                      border-color: var(--accento) !important; }
+[data-baseweb="radio"] div[aria-checked="true"] { background-color: var(--accento) !important;
+                                                  border-color: var(--accento) !important; }
+[data-testid="stToggle"] [aria-checked="true"] { background: var(--accento) !important; }
+[data-baseweb="input"]:focus-within, [data-baseweb="select"]:focus-within,
+[data-baseweb="textarea"]:focus-within { border-color: var(--accento) !important;
+                                         box-shadow: 0 0 0 1px var(--accento) !important; }
+[data-testid="stSpinner"] i { border-top-color: var(--accento) !important; }
+
+/* ── rispetto delle preferenze di sistema ─────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important;
+                           scroll-behavior: auto !important; }
+}
+@media (prefers-contrast: more) {
+  :root { --riga: #7A8794; --inchiostro-2: #2B3844; }
+  .marca { border-width: 2px; }
+}
+@media (max-width: 880px) {
+  .block-container { padding-left: 1rem; padding-right: 1rem; }
+  .cifra { flex-basis: 45%; }
+}
+</style>
+"""
+
+
+# ═══ IL TEMA DI STREAMLIT, IMPOSTATO DA CODICE ══════════════════════════════
+# Gli stessi colori dei token CSS qui sopra, ma per i controlli che Streamlit
+# disegna da sé (cursori, radio, caselle, anelli di fuoco): quelli prendono il
+# colore dal tema, non dal nostro CSS.
+#
+# Il tema, di norma, sta in `.streamlit/config.toml`. Quella cartella comincia
+# col punto: il gestore file non la mostra e il caricamento su GitHub la
+# salta, e infatti si è persa. Le opzioni di riga di comando valgono solo se si
+# parte da `avvia.py`, e su Streamlit Cloud l'app la lancia la piattaforma.
+# Quindi si imposta QUI, da codice, con l'API interna di configurazione: il
+# messaggio di sessione che porta il tema al browser viene costruito a ogni
+# riesecuzione, e legge la configurazione in quel momento. La prima esecuzione
+# di una sessione parte col tema di serie; si fa ripartire una volta, e dalla
+# seconda in poi il tema è il nostro. Nessun file, nessuna cartella.
+TEMA_STREAMLIT = {
+    "theme.base": "light",
+    "theme.primaryColor": "#15616D",
+    "theme.backgroundColor": "#F1F4F7",
+    "theme.secondaryBackgroundColor": "#FFFFFF",
+    "theme.textColor": "#17212B",
+    "server.maxUploadSize": 50,
+    "client.toolbarMode": "minimal",
+}
+
+
+def imposta_tema_streamlit() -> None:
+    """Imposta il tema da codice e fa ripartire la prima esecuzione della
+    sessione, così il browser lo riceve subito. Se l'API interna non c'è o
+    cambia, non succede niente: restano i colori del CSS."""
+    try:
+        import streamlit.config as configurazione
+        cambiato = False
+        for chiave, valore in TEMA_STREAMLIT.items():
+            if configurazione.get_option(chiave) != valore:
+                configurazione.set_option(chiave, valore)
+                cambiato = True
+        # Una sola ripartenza per sessione: alla seconda esecuzione get_option
+        # restituisce già il nostro valore e `cambiato` resta falso.
+        if cambiato and not st.session_state.get("_tema_applicato"):
+            st.session_state["_tema_applicato"] = True
+            st.rerun()
+    except Exception:
+        pass
+
+
+def applica_tema() -> None:
+    st.markdown(TEMA, unsafe_allow_html=True)
+
+
+def tema_configurato() -> bool:
+    """Dice se le impostazioni di Streamlit sono quelle nostre.
+
+    Le passa `avvia.py` come variabili d'ambiente. Non servono all'aspetto —
+    quello lo tiene su il CSS qui sopra — ma portano il limite di caricamento e
+    la barra degli strumenti ridotta, e sapere se mancano evita mezz'ora di
+    dubbi a chi lancia `streamlit run app.py` a mano."""
+    try:
+        return str(st.get_option("theme.primaryColor") or "").lower() == "#15616d"
+    except Exception:
+        return False
+
+
+# =============================================================================
+# I MARCATORI — forma, parola, colore. In quest'ordine di importanza.
+# =============================================================================
+SEGNI_GRAVITA = {"CRITICAL": ("▲", "critica"), "HIGH": ("▲", "alta"),
+                 "MEDIUM": ("◆", ""), "LOW": ("•", "spenta")}
+SEGNI_CONFIDENZA = {"HIGH": "●●●", "MEDIUM": "●●○", "LOW": "●○○"}
+SEGNI_ORIGINE = {"STATIC_ANALYSIS": ("■", "Parser"), "LLM_ANALYSIS": ("□", "Model"),
+                 "MIXED": ("◧", "Both")}
+
+
+def _e(t: Any) -> str:
+    return html.escape(str(t if t is not None else ""))
+
+
+def marca(testo: str, segno: str = "", tono: str = "") -> str:
+    """Un marcatore. `tono` ∈ {'', 'accesa', 'critica', 'alta', 'ok', 'spenta'}."""
+    s = f'<span class="segno">{_e(segno)}</span>' if segno else ""
+    return f'<span class="marca {tono}">{s}{_e(testo)}</span>'
+
+
+def fila(marcatori: List[str]) -> None:
+    st.markdown('<div class="fila">' + "".join(marcatori) + "</div>", unsafe_allow_html=True)
+
+
+def marca_gravita(valore: str) -> str:
+    segno, tono = SEGNI_GRAVITA.get(str(valore).upper(), ("•", "spenta"))
+    return marca(str(valore).upper(), segno, tono)
+
+
+def marca_origine(valore: str) -> str:
+    segno, etichetta = SEGNI_ORIGINE.get(str(valore).upper(), ("□", "Model"))
+    return marca(etichetta, segno)
+
+
+# =============================================================================
+# TESTATA, CIFRE, SEZIONI
+# =============================================================================
+def _con_iniziali_in_evidenza(titolo: str) -> str:
+    """Il titolo con la sigla in evidenza.
+
+    Nella forma «LAKE: Legacy Application Knowledge Extractor» la sigla sta
+    davanti per esteso e il nome la spiega: si colora la sigla, e le iniziali
+    delle parole che la compongono, così il legame fra le due si vede senza
+    doverlo dire. Senza i due punti si colorano le sole iniziali.
+
+    Non è legata a queste parole in particolare: cambiando il nome, cambia da
+    sé quello che viene evidenziato."""
+    prefisso = ""
+    if ": " in titolo:
+        sigla, titolo = titolo.split(": ", 1)
+        prefisso = f'<span class="sigla">{_e(sigla)}</span>{_e(":")} '
+    parole = titolo.split(" ")
+    pezzi = [f'<span class="sigla">{_e(p[0])}</span>{_e(p[1:])}' if p else ""
+             for p in parole]
+    return prefisso + " ".join(pezzi)
+
+
+# ═══ IL BANNER ══════════════════════════════════════════════════════════════
+# Sta QUI DENTRO, non in un file accanto. Un file separato si perde: la
+# cartella `assets/` non è arrivata nella copia in produzione e la testata è
+# tornata al titolo scritto — lo stesso che era successo con `.streamlit/`.
+# Un modulo Python invece arriva sempre, perché senza non parte niente.
+#
+# È un SVG e non un'immagine: pesa due chilobyte e mezzo invece di
+# seicentottanta, resta nitido a qualunque ingrandimento e su qualunque
+# schermo, il testo dentro è testo vero (selezionabile, pulito in stampa), e
+# usa i colori esatti del tema qui sopra — `#0E434C` e `#15616D` sono
+# l'accento e la sua variante cupa. Se l'accento cambia, il banner si allinea
+# cambiando queste righe, senza rigenerare niente.
+#
+# Inline e non come `data:` in un `<img>`: il ripulitore di HTML del browser
+# tratta le due cose in modo diverso, e l'SVG scritto direttamente nella
+# pagina è la forma che passa sempre.
+BANNER_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 400" preserveAspectRatio="xMidYMid meet" role="img">
+  <defs>
+    <clipPath id="lake-taglio"><rect width="1600" height="400" rx="12"/></clipPath>
+    <linearGradient id="lake-acqua" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0"   stop-color="#0B3A42"/>
+      <stop offset="0.5" stop-color="#0E434C"/>
+      <stop offset="1"   stop-color="#15616D"/>
+    </linearGradient>
+    <radialGradient id="lake-bagliore" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#7FD4DE" stop-opacity=".55"/>
+      <stop offset="1" stop-color="#7FD4DE" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <g clip-path="url(#lake-taglio)">
+    <rect width="1600" height="400" fill="url(#lake-acqua)"/>
+    <ellipse cx="430" cy="300" rx="300" ry="90" fill="url(#lake-bagliore)"/>
+    <ellipse cx="1180" cy="300" rx="270" ry="80" fill="url(#lake-bagliore)"/>
+    <g fill="none" stroke="#8FE0EA">
+      <g transform="translate(430,300)">
+        <ellipse rx="58"  ry="14" opacity=".85" stroke-width="2"/>
+        <ellipse rx="112" ry="27" opacity=".60" stroke-width="1.7"/>
+        <ellipse rx="176" ry="42" opacity=".40" stroke-width="1.5"/>
+        <ellipse rx="248" ry="59" opacity=".25" stroke-width="1.3"/>
+        <ellipse rx="326" ry="78" opacity=".14" stroke-width="1.2"/>
+      </g>
+      <g transform="translate(1180,300)">
+        <ellipse rx="50"  ry="12" opacity=".75" stroke-width="2"/>
+        <ellipse rx="98"  ry="24" opacity=".52" stroke-width="1.7"/>
+        <ellipse rx="156" ry="37" opacity=".34" stroke-width="1.5"/>
+        <ellipse rx="220" ry="52" opacity=".20" stroke-width="1.3"/>
+        <ellipse rx="292" ry="70" opacity=".11" stroke-width="1.2"/>
+      </g>
+    </g>
+    <line x1="0" y1="232" x2="1600" y2="232" stroke="#8FE0EA" stroke-width="1" opacity=".35"/>
+    <g fill="#8FE0EA" opacity=".30">
+      <rect x="140" y="92"  width="92"  height="5" rx="2.5"/>
+      <rect x="140" y="110" width="148" height="5" rx="2.5"/>
+      <rect x="140" y="128" width="66"  height="5" rx="2.5"/>
+      <rect x="1318" y="92"  width="126" height="5" rx="2.5"/>
+      <rect x="1318" y="110" width="78"  height="5" rx="2.5"/>
+      <rect x="1318" y="128" width="164" height="5" rx="2.5"/>
+    </g>
+    <text x="800" y="184" text-anchor="middle"
+          font-family="IBM Plex Sans, Segoe UI, Arial, sans-serif"
+          font-size="126" font-weight="600" letter-spacing="15" fill="#FFFFFF">LAKE</text>
+    <text x="800" y="224" text-anchor="middle"
+          font-family="IBM Plex Sans, Segoe UI, Arial, sans-serif"
+          font-size="20" font-weight="500" letter-spacing="7.5" fill="#8FE0EA">LEGACY APPLICATION KNOWLEDGE EXTRACTOR</text>
+  </g>
+</svg>"""
+
+
+def testata(titolo: str, compito: str, marcatori: Optional[List[str]] = None,
+           sigla: bool = False) -> None:
+    """L'intestazione della pagina.
+
+    Se il banner c'è, prende il posto del titolo scritto — e il titolo diventa
+    il suo testo alternativo, che è quello che legge chi usa uno screen reader
+    e quello che compare se l'immagine non si carica. Il nome del prodotto non
+    deve mai dipendere da un file che potrebbe mancare."""
+    # Il titolo resta scritto nella pagina, anche col banner: è quello che
+    # legge uno screen reader e quello che resta se l'SVG non venisse
+    # disegnato. Nascosto alla vista, non al lettore.
+    st.markdown(
+        f'<div class="testata">{BANNER_SVG}'
+        f'<h1 class="solo-lettori">{_e(titolo)}</h1>'
+        f'<p class="compito">{_e(compito)}</p></div>', unsafe_allow_html=True)
+    if marcatori:
+        fila(marcatori)
+
+
+def cifre(voci: List[Dict[str, Any]]) -> None:
+    """Le cifre di sintesi. `voci` = [{valore, voce, nota?, rilievo?}, …]
+
+    Sono `div` e non `st.metric` perché servono la nota sotto e il monospazio
+    sul numero: due numeri incolonnati si confrontano con l'occhio solo se le
+    cifre hanno tutte la stessa larghezza."""
+    pezzi = []
+    for v in voci:
+        nota = f'<div class="nota">{_e(v["nota"])}</div>' if v.get("nota") else ""
+        classe = "cifra rilievo" if v.get("rilievo") else "cifra"
+        pezzi.append(f'<div class="{classe}"><div class="valore">{_e(v["valore"])}</div>'
+                     f'<div class="voce">{_e(v["voce"])}</div>{nota}</div>')
+    st.markdown('<div class="cifre">' + "".join(pezzi) + "</div>", unsafe_allow_html=True)
+
+
+def sezione(nome: str, spiegazione: str = "", conto: Optional[int] = None,
+            confermate: Optional[int] = None) -> None:
+    conteggio = ""
+    if conto is not None:
+        conteggio = f'<span class="conto">{conto} righe</span>'
+        if confermate is not None and conto:
+            conteggio = (f'<span class="conto">{confermate} di {conto} righe confermate</span>')
+    st.markdown(f'<div class="sezione"><span class="nome">{_e(nome)}</span>{conteggio}</div>',
+                unsafe_allow_html=True)
+    if conto and confermate is not None:
+        quota = int(round(confermate / conto * 100))
+        st.markdown(f'<div class="avanza"><span style="width:{quota}%"></span></div>',
+                    unsafe_allow_html=True)
+    if spiegazione:
+        st.markdown(f'<p class="spiega">{_e(spiegazione)}</p>', unsafe_allow_html=True)
+
+
+def tappa(numero: str, testo: str) -> None:
+    """L'intestazione di una tappa NELLA BARRA LATERALE.
+
+    `st.sidebar.markdown`, non `st.markdown`: con il secondo le tre tappe
+    finivano in cima alla pagina, sopra il titolo, dove non volevano dire
+    niente — e nella barra laterale restavano i controlli senza intestazione.
+    I numeri ci stanno perché questa È una sequenza: senza chiave non si
+    analizza, senza sorgenti non si esporta."""
+    st.sidebar.markdown(f'<div class="tappa"><span>{_e(numero)}</span>{_e(testo)}</div>',
+                        unsafe_allow_html=True)
+
+
+def nota(testo: str) -> None:
+    st.markdown(f'<div class="nota-riquadro">{_e(testo)}</div>', unsafe_allow_html=True)
+
+
+def stato_vuoto(titolo: str, invito: str, passi: List[str]) -> None:
+    voci = "".join(f"<li>{p}</li>" for p in passi)  # i passi possono contenere <b>
+    st.markdown(f'<div class="vuoto"><h3>{_e(titolo)}</h3><p>{_e(invito)}</p>'
+                f'<ul class="passi">{voci}</ul></div>', unsafe_allow_html=True)
+
+
+# =============================================================================
+# COMPATIBILITÀ — Streamlit cambia in fretta. Qui si prova prima di usare, così
+# un'installazione più vecchia perde un bordo, non una funzione.
+# =============================================================================
+def riquadro(bordo: bool = True):
+    try:
+        return st.container(border=bordo)
+    except TypeError:
+        return st.container()
+
+
+def scelta_segmentata(etichetta: str, opzioni: List[str], predefinita: int = 0,
+                      chiave: str = "", aiuto: str = "") -> str:
+    if hasattr(st, "segmented_control"):
+        scelto = st.segmented_control(etichetta, opzioni, default=opzioni[predefinita],
+                                      key=chiave, help=aiuto)
+        return scelto or opzioni[predefinita]
+    return st.radio(etichetta, opzioni, index=predefinita, key=chiave, help=aiuto,
+                    horizontal=True)
+
+
+def interruttore(etichetta: str, valore: bool = False, chiave: str = "", aiuto: str = "") -> bool:
+    if hasattr(st, "toggle"):
+        return st.toggle(etichetta, value=valore, key=chiave, help=aiuto)
+    return st.checkbox(etichetta, value=valore, key=chiave, help=aiuto)
+
+
+def lavoro_in_corso(etichetta: str):
+    """Un riquadro che dice cosa sta succedendo mentre il modello lavora.
+
+    `st.status` mostra una rotella che gira e si può aprire per leggere le
+    righe man mano che arrivano; sulle installazioni che non ce l'hanno si
+    ripiega su `st.spinner`, che la rotella ce l'ha comunque. Un'analisi vera
+    dura minuti: senza qualcosa che si muove, la pagina sembra bloccata e la
+    gente ricarica — buttando via il lavoro fatto fino a lì."""
+    if hasattr(st, "status"):
+        return st.status(etichetta, expanded=True)
+    return st.spinner(etichetta)
+
+
+def passo(contenitore, testo: str) -> None:
+    """Aggiorna l'etichetta del riquadro, se il riquadro sa farlo."""
+    try:
+        contenitore.update(label=testo)
+    except Exception:
+        pass
+
+
+def finito(contenitore, testo: str, riuscito: bool = True) -> None:
+    try:
+        contenitore.update(label=testo, state="complete" if riuscito else "error",
+                           expanded=False)
+    except Exception:
+        pass
+
+
+def avviso_temporaneo(testo: str) -> None:
+    """Un avviso che compare e sparisce.
+
+    Niente icona: `st.toast` valida l'icona come emoji vera, e un segno di
+    spunta tipografico (✓, U+2713) non lo è — Streamlit alza un'eccezione. Con
+    l'avviso in fondo al blocco dell'analisi, quell'eccezione veniva raccolta
+    dal `except` di sopra e compariva come «The analysis stopped», su
+    un'analisi che era invece finita bene e già salvata. Un avviso di cortesia
+    non deve poter far fallire tre minuti di lavoro: qui non ha più un'icona da
+    validare, e in più qualunque cosa vada storta nel mostrarlo viene
+    ignorata."""
+    try:
+        if hasattr(st, "toast"):
+            st.toast(testo)
+        else:
+            st.success(testo)
+    except Exception:
+        pass

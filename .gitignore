@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+package.json
+package-lock.json
+cache/
+
+# NOTA: `fonts/` va versionata (IBM Plex, licenza OFL: vedi fonts/LICENSE.txt).
+# `cache/` no: contiene i lotti già analizzati e la memoria della catena,
+# tutto rigenerabile. Nel progetto non ci sono cartelle nascoste.

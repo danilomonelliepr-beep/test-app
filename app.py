@@ -34,7 +34,7 @@ from model_chain import CatenaModelli, NessunModello
 # =============================================================================
 st.set_page_config(
     page_title="LAKE — Legacy Application Knowledge Extractor",
-    page_icon="🧭",
+    page_icon=ui.icona_pagina(),   # il marchio; se non si può disegnare, la bussola di prima
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -2047,6 +2047,7 @@ def scopri_modelli(provider, api_key, azure_endpoint, preferenza):
 # decorazione.
 # =============================================================================
 # ── 1 · IL MODELLO ────────────────────────────────────────────────────────
+ui.logo_barra()   # il logo, prima di ogni altro elemento della barra laterale
 ui.tappa("1", "Model")
 provider = st.sidebar.selectbox(
     "Provider", ["Microsoft Azure OpenAI", "Anthropic Claude", "Google Gemini"],

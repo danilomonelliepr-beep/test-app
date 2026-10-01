@@ -1,14 +1,15 @@
-__version__ = "2026.09.23b"
+__version__ = "2026.10.02d"
 
 import ast
 import builtins
 import hashlib
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import json
 import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -124,8 +125,30 @@ MAX_BINARY_SIZE_BYTES = 50 * 1024 * 1024
 MAX_TOTAL_SOURCE_CHARS = 1_500_000      # con l'analisi a lotti il tetto di una
                                         # singola chiamata non è più il tetto
                                         # dell'applicazione
-CHARS_PER_LOTTO = 120_000               # quanto sorgente sta in una chiamata
+CHARS_PER_LOTTO = 120_000               # quanto sorgente sta in una chiamata, al massimo
+MIN_PER_LOTTO = 60_000                  # sotto, si pagano risposte intere per briciole
 MAX_LOTTI = 12                          # oltre, si chiede all'utente di ridurre
+
+
+def dimensione_lotto(caratteri_totali, parallelismo=1):
+    """Quanto sorgente mettere in ogni lotto: lo decide il codice, non l'utente.
+
+    L'intenzione l'utente l'ha già data con «Batches at once»: vuole N corsie.
+    Si fanno tanti lotti quante le corsie, SE il codice basta a riempirle con
+    lotti di almeno MIN_PER_LOTTO caratteri — sotto, ogni lotto paga una
+    risposta intera (sintesi, sezioni, tutto) per leggere briciole, e i file
+    che si parlano finiscono separati. Il tetto resta CHARS_PER_LOTTO: oltre,
+    il modello taglia la risposta. Fra i due, i lotti si BILANCIANO: 150 000
+    caratteri non fanno più un lotto da 120 000 e uno da 30 000 — dove il
+    piccolo finisce subito e il tempo lo fa il grosso — ma due da 75 000.
+    Stesso costo, tempo di parete più corto, anche a una corsia sola.
+
+    Torna (caratteri per lotto, numero di lotti previsto)."""
+    tot = max(int(caratteri_totali or 0), 1)
+    per_tetto = -(-tot // CHARS_PER_LOTTO)                 # ceil: quanti ne servono comunque
+    per_corsie = min(max(int(parallelismo or 1), 1), max(tot // MIN_PER_LOTTO, 1))
+    n = max(per_tetto, per_corsie)
+    return (-(-tot // n), n)
 
 # Massimo di righe che l'analisi statica può produrre per file su un singolo
 # tipo di ritrovamento. Senza tetto, il pattern «qualsiasi_nome(» su un file
@@ -351,7 +374,7 @@ def _gruppi_collegati(sources, metadata):
     return list(gruppi.values())
 
 
-def split_into_batches(sources, chars_per_batch=CHARS_PER_LOTTO, metadata=None):
+def split_into_batches(sources, chars_per_batch=None, metadata=None, parallelismo=1):
     """L'analisi a lotti.
 
     Oltre una certa dimensione il modello troncherebbe la risposta a metà e
@@ -368,6 +391,15 @@ def split_into_batches(sources, chars_per_batch=CHARS_PER_LOTTO, metadata=None):
       finivano separati per puro ordine alfabetico e il loro legame non lo
       vedeva nessuno.
     """
+    if chars_per_batch is None:
+        chars_per_batch, _ = dimensione_lotto(sum(len(s["content"]) for s in sources), parallelismo)
+    # Il bersaglio bilanciato è un'indicazione, non un muro: il muro è il
+    # tetto oltre il quale il modello taglia. Un gruppo di file collegati che
+    # sfora il bersaglio di poco resta intero — spezzarlo per due caratteri in
+    # più costerebbe un lotto in più e un legame in meno. È successo nel
+    # collaudo: 90 081 contro un bersaglio di 90 079.
+    capienza = min(int(chars_per_batch * 1.1), CHARS_PER_LOTTO)
+    muro = CHARS_PER_LOTTO
     if metadata:
         gruppi = _gruppi_collegati(sources, metadata)
     else:
@@ -378,7 +410,7 @@ def split_into_batches(sources, chars_per_batch=CHARS_PER_LOTTO, metadata=None):
     batches, corrente, quanti = [], [], 0
     for gruppo in gruppi:
         peso = sum(len(s["content"]) for s in gruppo)
-        if peso > chars_per_batch:
+        if peso > muro:
             # Un gruppo più grande di un lotto va spezzato per forza: si chiude
             # quello che c'è e si dividono i suoi file per dimensione.
             if corrente:
@@ -386,7 +418,7 @@ def split_into_batches(sources, chars_per_batch=CHARS_PER_LOTTO, metadata=None):
                 corrente, quanti = [], 0
             interno, dentro = [], 0
             for file_singolo in sorted(gruppo, key=lambda x: -len(x["content"])):
-                if interno and dentro + len(file_singolo["content"]) > chars_per_batch:
+                if interno and dentro + len(file_singolo["content"]) > capienza:
                     batches.append(interno)
                     interno, dentro = [], 0
                 interno.append(file_singolo)
@@ -394,7 +426,7 @@ def split_into_batches(sources, chars_per_batch=CHARS_PER_LOTTO, metadata=None):
             if interno:
                 batches.append(interno)
             continue
-        if corrente and quanti + peso > chars_per_batch:
+        if corrente and quanti + peso > capienza:
             batches.append(corrente)
             corrente, quanti = [], 0
         corrente.extend(gruppo)
@@ -1032,6 +1064,7 @@ def continua_lotto(catena, stato, ragionamento, modello=None):
     nuovo = stato_lotto(stato["prompt"], testo, con, seguito.troncata,
                         stato["giri"] + 1, [{"filename": f} for f in stato["file"]],
                         stato["lotto"], stato["profondita"], stato["chiave"])
+    nuovo["uso"] = somma_uso(stato.get("uso"), seguito.uso)
     nuovo["cambi_modello"] = list(stato.get("cambi_modello") or [])
     if con != stato["modello"]:
         nuovo["cambi_modello"].append(f"{stato['modello']} → {con}")
@@ -1095,16 +1128,23 @@ def forza_provenienza_modello(grezzo):
 
 
 def analyze_batch(catena, provider, sources, metadata, lotto, profondita="full",
-                  ragionamento="low", chiave=""):
+                  ragionamento="low", chiave="", segnala=None):
     """Un lotto: la domanda, poi le continuazioni automatiche finché la
-    risposta non è completa o non si è esaurita la pazienza automatica."""
+    risposta non è completa o non si è esaurita la pazienza automatica.
+
+    `segnala(giro)` dice al tabellone dei lotti che sta partendo una
+    continuazione. Gira in un filo secondario: scrive uno stato, non tocca
+    l'interfaccia."""
     prompt = contract.prompt_analisi(sources, metadata_for_prompt(metadata, sources),
                                      lotto=lotto, profondita=profondita,
                                      note=nota_provenienza(sources))
     risposta = ask_model(catena, prompt, provider, profondita)
     stato = stato_lotto(prompt, risposta.testo, risposta.modello, risposta.troncata, 0,
                         sources, lotto, profondita, chiave)
+    stato["uso"] = somma_uso(risposta.uso)
     while not stato["completo"] and stato["giri"] < CONTINUAZIONI_AUTOMATICHE:
+        if segnala:
+            segnala(stato["giri"] + 1)
         try:
             stato = continua_lotto(catena, stato, ragionamento)
         except NessunModello as e:
@@ -1251,6 +1291,70 @@ def abbassa_confidenza_non_sorgente(risultato, provenienza_file):
     return risultato
 
 
+# =============================================================================
+# QUANTO COSTA: STIMA PRIMA, CONTO DOPO
+# Prima di partire i token si possono solo STIMARE: quelli in ingresso dalla
+# lunghezza del sorgente, quelli in uscita solo come forbice, perché dipendono
+# da quanto il modello scrive e pensa. A fine analisi invece i token sono
+# quelli CONTATI dal provider, e il costo è un conto, non una stima.
+# I prezzi non li mette il codice: variano per modello, per contratto e nel
+# tempo, e un prezzo inventato è peggio di nessun prezzo. Li scrive chi li
+# conosce, in Expert settings, o li fissa nei Secrets.
+# =============================================================================
+CARATTERI_PER_TOKEN = 3.5      # codice sorgente: più fitto della prosa (≈ 4)
+MARGINE_PENSIERO = {"minimal": 0, "low": 4000, "medium": 8000, "high": 16000}
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def _lotti_per_stima(sources, parallelismo=1):
+    """I lotti come li formerà l'analisi (seguendo le dipendenze e la regola
+    di dimensionamento), per stimare sui lotti veri. In cache: l'analisi
+    statica costa qualche secondo, e la stima si ricalcola a ogni giro."""
+    return split_into_batches(sources, metadata=extract_technical_metadata(sources),
+                              parallelismo=parallelismo)
+
+
+def stima_consumo(sources, provider, model_name, preferenza, ragionamento, profondita,
+                  usa_cache=True, parallelismo=1):
+    lotti = _lotti_per_stima(sources, parallelismo)
+    da_pagare = [lotto for lotto in lotti
+                 if not (usa_cache and leggi_cache(chiave_lotto(
+                     lotto, provider, model_name, preferenza, ragionamento, profondita)))]
+    impalcatura = len(contract.prompt_analisi([], {}, (1, 1), profondita=profondita))
+    caratteri = sum(len(x["content"]) for lotto in da_pagare for x in lotto)
+    n = len(da_pagare)
+    tetto = contract.PROFONDITA[profondita]["max_token"]
+    ingresso = round((caratteri + impalcatura * n) / CARATTERI_PER_TOKEN)
+    uscita_min = round(0.25 * tetto * n)
+    uscita_max = (tetto + MARGINE_PENSIERO.get(ragionamento, 0)) * n
+    if len(lotti) > 1 and n:                # il consolidamento: solo inventario
+        ingresso += 6000
+        uscita_max += 4000
+    return {"lotti": len(lotti), "da_pagare": n, "input": ingresso,
+            "output_min": uscita_min, "output_max": uscita_max}
+
+
+def costo(token_in, token_out, prezzo_in, prezzo_out):
+    """Prezzi per milione di token. Il ragionamento si paga come uscita, ed è
+    già dentro `token_out`."""
+    return token_in / 1e6 * prezzo_in + token_out / 1e6 * prezzo_out
+
+
+def euro(valore):
+    return f"€{valore:,.2f}" if valore >= 0.01 else "< €0.01"
+
+
+def riga_consumo(uso, prezzo_in, prezzo_out):
+    """«43,120 tokens in · 11,380 out (3,100 thinking) · ≈ €0.16»"""
+    testo = f"{uso.get('input', 0):,} tokens in · {uso.get('output', 0):,} out"
+    if uso.get("ragionamento"):
+        testo += f" ({uso['ragionamento']:,} thinking)"
+    if prezzo_in or prezzo_out:
+        testo += " · ≈ " + euro(costo(uso.get("input", 0), uso.get("output", 0),
+                                      prezzo_in, prezzo_out))
+    return testo
+
+
 def analysis_signature(sources, provider, model_name, preferenza, profondita="full"):
     """L'impronta dell'analisi: stessi file, stesso provider, stesso contratto
     ⇒ stessa risposta. Serve a non ripagare (e non riaspettare) tre minuti di
@@ -1259,23 +1363,149 @@ def analysis_signature(sources, provider, model_name, preferenza, profondita="fu
     parti += sorted(s["hash"] for s in sources)
     return hashlib.sha256("|".join(parti).encode()).hexdigest()[:16]
 
+# =============================================================================
+# QUANTO DURA DI SOLITO — imparato dalle esecuzioni passate, non simulato.
+# Ogni lotto finito lascia una riga in `cache/tempi.json`: modello, livello di
+# ragionamento, caratteri in ingresso, secondi. La volta dopo, per un lotto
+# simile, si può dire «di solito ~2:10» — con scritto da quante esecuzioni
+# viene. Nessuna storia, nessuna stima: meglio niente che un numero inventato.
+# =============================================================================
+FILE_TEMPI = CARTELLA_CACHE / "tempi.json"
+_lock_tempi = threading.Lock()
+
+
+def _leggi_tempi():
+    try:
+        return json.loads(FILE_TEMPI.read_text("utf-8"))
+    except Exception:
+        return []
+
+
+def ricorda_tempo(modello, ragionamento, caratteri, secondi):
+    if not caratteri or not secondi or secondi <= 0:
+        return
+    with _lock_tempi:
+        tempi = _leggi_tempi()
+        tempi.append({"modello": modello, "ragionamento": ragionamento,
+                      "caratteri": int(caratteri), "secondi": round(float(secondi), 1),
+                      "quando": time.strftime("%Y-%m-%d %H:%M")})
+        tempi = tempi[-300:]                       # le ultime trecento bastano
+        try:
+            CARTELLA_CACHE.mkdir(exist_ok=True)
+            tmp = FILE_TEMPI.with_suffix(".tmp")
+            tmp.write_text(json.dumps(tempi), "utf-8")
+            tmp.replace(FILE_TEMPI)
+        except Exception:
+            pass                                   # la storia è un lusso
+
+
+def stima_tempo(modello, ragionamento, caratteri):
+    """(secondi stimati, numero di esecuzioni su cui si basa), oppure None.
+
+    Si cerca prima lo stesso modello con lo stesso ragionamento, poi lo stesso
+    modello, poi qualunque cosa: la velocità per carattere è una proprietà
+    del modello più che del codice. Si usa la mediana, che non si fa
+    trascinare da un lotto che è rimasto in attesa per un 429."""
+    if not caratteri:
+        return None
+    tempi = _leggi_tempi()
+    for filtro in (lambda t: t["modello"] == modello and t["ragionamento"] == ragionamento,
+                   lambda t: t["modello"] == modello,
+                   lambda t: True):
+        voci = [t for t in tempi if filtro(t) and t.get("caratteri")]
+        if len(voci) >= 2:
+            rapporti = sorted(t["secondi"] / t["caratteri"] for t in voci)
+            mediana = rapporti[len(rapporti) // 2]
+            return (round(mediana * caratteri), len(voci))
+    return None
+
+
+def stato_fallito(lotto, posizione, profondita, chiave, causa, messaggio):
+    """Un lotto che non ha prodotto una risposta: guasto definitivo del
+    modello, o fermato dalla persona. Si consegna COSÌ, invece di far cadere
+    l'intera analisi e perdere i lotti riusciti. Porta con sé i suoi sorgenti,
+    perché dal pannello si possa riprovare solo lui — nella sessione, non nel
+    JSON esportato."""
+    avviso = (f"Batch {posizione[0]}/{posizione[1]}: "
+              + ("stopped before it was asked" if causa == "fermato" else f"failed ({causa})")
+              + " — nothing from these files is in the tables yet: "
+              + ", ".join(x["filename"] for x in lotto))
+    return {"completo": False, "fallito": causa, "messaggio": messaggio, "modello": "",
+            "giri": 0, "file": [x["filename"] for x in lotto], "lotto": posizione,
+            "profondita": profondita, "chiave": chiave, "sorgenti": lotto, "uso": {},
+            "risultato": contract.normalizza({}, [avviso])}
+
+
+class Tabellone:
+    """Lo stato di ogni lotto mentre l'analisi gira.
+
+    I lotti lavorano in fili separati e Streamlit si aggiorna solo dal filo
+    principale: i fili quindi SCRIVONO qui, sotto lucchetto, e basta; il filo
+    principale LEGGE una copia e la disegna. Nessun filo secondario tocca mai
+    l'interfaccia. Stati: coda, cache, corso, continua, fatto, incompleto,
+    errore."""
+
+    def __init__(self, lotti):
+        self._lock = threading.Lock()
+        self.t0 = time.time()
+        self.righe = [{"n": i + 1, "file": [x["filename"] for x in lotto], "stato": "coda",
+                       "inizio": None, "fine": None, "giri": 0, "modello": "", "uso": {},
+                       "caratteri": sum(len(x["content"]) for x in lotto), "stima": None,
+                       "esecuzioni": 0}
+                      for i, lotto in enumerate(lotti)]
+
+    def segna(self, i, **campi):
+        with self._lock:
+            self.righe[i].update(campi)
+
+    def copia(self):
+        """Una fotografia, con i secondi trascorsi calcolati adesso."""
+        adesso = time.time()
+        with self._lock:
+            foto = [dict(r) for r in self.righe]
+        for r in foto:
+            r["secondi"] = (round((r["fine"] or adesso) - r["inizio"], 1) if r["inizio"] else None)
+            r["da"] = round(r["inizio"] - self.t0, 1) if r["inizio"] else None
+            r.pop("inizio", None)
+            r.pop("fine", None)
+        return foto
+
+
 def analyze_legacy_application(sources, metadata, provider, api_key, model_name,
                                azure_endpoint=None, preferenza="qualita", progress=None,
                                ragionamento="low", profondita="full", parallelismo=1,
-                               usa_cache=True):
+                               usa_cache=True, fase=None, osserva=None, intervallo=1.0,
+                               salva_parziale=None):
     """Torna (risultato composto, stati dei lotti). Gli stati servono a
-    continuare i lotti incompleti con lo stesso modello."""
+    continuare i lotti incompleti con lo stesso modello.
+
+    `fase(nome, **dettagli)` viene chiamata a ogni passo che si completa:
+    «lotti» (quanti sono), «contatto», «lotto» (uno finito), «tabelle»,
+    «collegamento». Serve alla barra di avanzamento, che conta passi veri e
+    non tempo inventato.
+
+    `osserva(fotografia)` riceve, ogni `intervallo` secondi, lo stato di tutti
+    i lotti — chi è in coda, chi sta lavorando e da quanto, chi ha finito e con
+    quanti token. Viene chiamata dal filo principale, quindi può disegnare.
+
+    `salva_parziale(risultato, stati)` viene chiamata se l'esecuzione viene
+    INTERROTTA (il bottone Stop di Streamlit): riceve quello che c'è, con i
+    lotti non finiti marcati, perché non vada perso."""
+    fase = fase or (lambda *a, **k: None)
+    osserva = osserva or (lambda foto: None)
     diario = []
     partenza = time.time()
     catena = build_chain(provider, api_key, azure_endpoint, model_name, preferenza, diario,
                          ragionamento)
-    lotti = split_into_batches(sources, metadata=metadata)
+    lotti = split_into_batches(sources, metadata=metadata, parallelismo=parallelismo)
     if len(lotti) > MAX_LOTTI:
         raise ValueError(
             f"The codebase would need {len(lotti)} batches (limit {MAX_LOTTI}). "
             "Analyse it in separate runs, by subsystem."
         )
     n = len(lotti)
+    fase("lotti", n=n)
+    tabellone = Tabellone(lotti)
     stati = [None] * n
     da_fare, riusati, completati = [], 0, 0
     for i, lotto in enumerate(lotti):
@@ -1287,8 +1517,10 @@ def analyze_legacy_application(sources, metadata, provider, api_key, model_name,
                         "profondita": profondita, "chiave": chiave, "giri": 0}
             riusati += 1
             completati += 1
+            tabellone.segna(i, stato="cache")
             if progress:
                 progress(completati, n, [x["filename"] for x in lotto], riusato=True)
+            fase("lotto", fatti=completati, n=n, file=[x["filename"] for x in lotto], riusato=True)
         else:
             da_fare.append((i, lotto, chiave))
 
@@ -1297,32 +1529,149 @@ def analyze_legacy_application(sources, metadata, provider, api_key, model_name,
         # i lotti in parallelo partono tutti dal modello che ha risposto invece
         # di rifare la prova ciascuno per conto suo.
         catena.chiedi("ping", solo_prova=True)
+        modello_atteso = catena.memoria.leggi_buono(catena.p.spazio(), 10 ** 9) or model_name or ""
+        fase("contatto", modello=modello_atteso)
+        for i, lotto, chiave in da_fare:
+            stimato = stima_tempo(modello_atteso, ragionamento, tabellone.righe[i]["caratteri"])
+            if stimato:
+                tabellone.segna(i, stima=stimato[0], esecuzioni=stimato[1])
         # I lotti in parallelo: la chiamata al modello è attesa di rete, e
         # tenerne una sola in volo alla volta è tempo buttato. Il tetto lo
         # sceglie l'utente perché è la sua quota che si consuma più in fretta.
-        with ThreadPoolExecutor(max_workers=max(1, min(parallelismo, len(da_fare)))) as pool:
-            futuri = {pool.submit(analyze_batch, catena, provider, lotto, metadata, (i + 1, n),
-                                  profondita, ragionamento, chiave): (i, lotto, chiave)
-                      for i, lotto, chiave in da_fare}
-            for futuro in as_completed(futuri):
-                i, lotto, chiave = futuri[futuro]
-                stati[i] = futuro.result()   # un guasto qui risale a chi chiama
-                if usa_cache and stati[i]["completo"]:
-                    scrivi_cache(chiave, stati[i]["risultato"])
-                completati += 1
-                if progress:   # sempre dal thread principale: Streamlit lo pretende
-                    progress(completati, n, [x["filename"] for x in lotto])
+        def lavora(i, lotto, chiave):
+            # Gira in un filo secondario: scrive sul tabellone, non disegna.
+            tabellone.segna(i, stato="corso", inizio=time.time())
+            try:
+                esito = analyze_batch(catena, provider, lotto, metadata, (i + 1, n), profondita,
+                                      ragionamento, chiave,
+                                      segnala=lambda giro: tabellone.segna(i, stato="continua",
+                                                                           giri=giro))
+            except Exception:
+                tabellone.segna(i, stato="errore", fine=time.time())
+                raise
+            tabellone.segna(i, stato="fatto" if esito["completo"] else "incompleto",
+                            fine=time.time(), giri=esito.get("giri", 0),
+                            modello=esito.get("modello", ""), uso=esito.get("uso") or {})
+            riga = tabellone.righe[i]
+            ricorda_tempo(esito.get("modello", ""), ragionamento, riga["caratteri"],
+                          (riga["fine"] or time.time()) - (riga["inizio"] or time.time()))
+            return esito
+
+        osserva(tabellone.copia())
+        pool = ThreadPoolExecutor(max_workers=max(1, min(parallelismo, len(da_fare))))
+        futuri = {pool.submit(lavora, i, lotto, chiave): (i, lotto, chiave)
+                  for i, lotto, chiave in da_fare}
+        pendenti = set(futuri)
+        try:
+            # Non si resta fermi ad aspettare il primo che finisce: si guarda
+            # ogni `intervallo` secondi, così il tabellone mostra anche chi
+            # sta lavorando e da quanto, non solo chi ha già finito.
+            while pendenti:
+                finiti, pendenti = wait(pendenti, timeout=intervallo, return_when=FIRST_COMPLETED)
+                for futuro in finiti:
+                    i, lotto, chiave = futuri[futuro]
+                    try:
+                        stati[i] = futuro.result()
+                    except NessunModello as e:
+                        # Un lotto rotto non fa cadere l'analisi: gli altri
+                        # sono buoni. Si consegna come «failed», con la causa,
+                        # e dal pannello si riprova solo lui.
+                        stati[i] = stato_fallito(lotto, (i + 1, n), profondita, chiave, e.causa,
+                                                 catena.messaggio_nessuno(e))
+                    except Exception as e:  # noqa: BLE001
+                        stati[i] = stato_fallito(lotto, (i + 1, n), profondita, chiave, "errore",
+                                                 f"{type(e).__name__}: {e}")
+                    if usa_cache and stati[i]["completo"]:
+                        scrivi_cache(chiave, stati[i]["risultato"])
+                    completati += 1
+                    if progress:   # sempre dal thread principale: Streamlit lo pretende
+                        progress(completati, n, [x["filename"] for x in lotto])
+                    fase("lotto", fatti=completati, n=n, file=[x["filename"] for x in lotto],
+                         riusato=False)
+                osserva(tabellone.copia())
+            pool.shutdown(wait=True)
+        except BaseException:
+            # Il bottone Stop di Streamlit arriva qui come un'eccezione sulla
+            # prima chiamata all'interfaccia. I lotti in coda non partono; quelli
+            # in corso finiscono nel loro filo, ma non li aspettiamo. Quello che
+            # c'è già si consegna a chi chiama, marcando il resto come fermato,
+            # e poi l'interruzione prosegue il suo corso.
+            for futuro in pendenti:
+                futuro.cancel()
+            pool.shutdown(wait=False, cancel_futures=True)
+            # Un lotto può essere FINITO nel suo filo senza che il filo
+            # principale ne abbia ancora raccolto il risultato — era già
+            # successo nel collaudo: il tabellone diceva «fatto» e il lotto
+            # veniva marcato «fermato» e perso. Prima si raccoglie, poi si
+            # marca quello che davvero non è arrivato.
+            # C'è una finestra minuscola fra il «fatto» scritto sul tabellone
+            # dal filo del lotto e il suo future che risulta concluso. Un
+            # lotto che il tabellone dà per finito è a un istante dalla fine:
+            # lo si aspetta qualche secondo, non si butta.
+            quasi = [f for f, (i, _l, _c) in futuri.items()
+                     if stati[i] is None and not f.done()
+                     and tabellone.righe[i]["stato"] in ("fatto", "incompleto", "errore")]
+            if quasi:
+                wait(quasi, timeout=3.0)
+            for futuro, (i, lotto, chiave) in futuri.items():
+                if stati[i] is None and futuro.done() and not futuro.cancelled():
+                    try:
+                        stati[i] = futuro.result()
+                        if usa_cache and stati[i]["completo"]:
+                            scrivi_cache(chiave, stati[i]["risultato"])
+                    except Exception as e:  # noqa: BLE001
+                        stati[i] = stato_fallito(lotto, (i + 1, n), profondita, chiave,
+                                                 getattr(e, "causa", "errore"), str(e))
+            for i, lotto, chiave in da_fare:
+                if stati[i] is None:
+                    tabellone.segna(i, stato="fermato", fine=time.time())
+                    stati[i] = stato_fallito(lotto, (i + 1, n), profondita, chiave, "fermato",
+                                             "Stopped by the user")
+            if salva_parziale:
+                try:
+                    parziale = componi_risultato(stati, metadata, catena, provider, lotti,
+                                                 profondita, ragionamento, riusati, diario, partenza)
+                    parziale["_esecuzione_lotti"] = tabellone.copia()
+                    parziale["_parallelismo"] = parallelismo
+                    salva_parziale(parziale, stati)
+                except Exception:
+                    pass
+            raise
+    else:
+        fase("contatto", modello="", saltato=True)   # tutto dalla cache: nessuno da chiamare
+    osserva(tabellone.copia())
 
     risultato = componi_risultato(stati, metadata, catena, provider, lotti, profondita,
-                                  ragionamento, riusati, diario, partenza)
+                                  ragionamento, riusati, diario, partenza, fase=fase)
+    # Com'è andata, lotto per lotto: resta nel risultato per chi vuole capire
+    # dopo dove è andato il tempo. Solo nomi, stati, tempi e token.
+    risultato["_esecuzione_lotti"] = tabellone.copia()
+    risultato["_parallelismo"] = parallelismo
     return risultato, stati
 
 
+def somma_uso(*usi):
+    """Somma dei token di più esecuzioni (l'analisi e le sue continuazioni)."""
+    totale = {"input": 0, "output": 0, "ragionamento": 0, "chiamate": 0, "per_modello": {}}
+    for uso in usi:
+        for k in ("input", "output", "ragionamento", "chiamate"):
+            totale[k] += int((uso or {}).get(k) or 0)
+        for modello, voce in ((uso or {}).get("per_modello") or {}).items():
+            dove = totale["per_modello"].setdefault(
+                modello, {"input": 0, "output": 0, "ragionamento": 0, "chiamate": 0})
+            for k in dove:
+                dove[k] += int(voce.get(k) or 0)
+    return totale
+
+
 def componi_risultato(stati, metadata, catena, provider, lotti, profondita, ragionamento,
-                      riusati, diario, partenza):
+                      riusati, diario, partenza, fase=None, uso_precedente=None):
     """Dai lotti al risultato unico. Separata dall'analisi perché si rifà
     anche dopo una continuazione, quando un lotto passa da incompleto a
-    completo."""
+    completo — e allora i token della continuazione si SOMMANO a quelli già
+    spesi (`uso_precedente`), perché il costo è di tutta l'analisi."""
+    fase = fase or (lambda *a, **k: None)
+    fase("tabelle")
     risultati = [s["risultato"] for s in stati]
     unito = contract.unisci(risultati)
     unito["_modello"] = next((s.get("modello") or s["risultato"].get("_modello", "")
@@ -1338,6 +1687,7 @@ def componi_risultato(stati, metadata, catena, provider, lotti, profondita, ragi
     if len(lotti) > 1 and not completo["_incompleti"]:
         # Il consolidamento vuole tutti i lotti finiti: lavora sull'inventario,
         # e un inventario a metà produce collegamenti a metà.
+        fase("collegamento")
         completo = consolida(catena, provider, completo, lotti)
         completo = diagrams.arricchisci(completo)
         completo["_durata_s"] = round(time.time() - partenza)
@@ -1345,6 +1695,8 @@ def componi_risultato(stati, metadata, catena, provider, lotti, profondita, ragi
         avvisi = list(completo.get("contract_warnings") or [])
         avvisi.append("consolidation postponed: not all batches are complete yet")
         completo["contract_warnings"] = avvisi
+    # I token si leggono DOPO il consolidamento, che è anche lui una chiamata.
+    completo["_uso"] = somma_uso(uso_precedente, catena.totale_consumo() if catena else {})
     return completo
 
 
@@ -1883,6 +2235,21 @@ with st.sidebar.expander("Expert settings"):
         help="How many batches are sent to the model at the same time. More is faster on big "
              "codebases, but eats your rate limit faster: on a free-tier key stay at 1 or 2."))
 
+    def _prezzo(nome):
+        try:
+            return float(impostazione(nome, predefinito="0") or 0)
+        except ValueError:
+            return 0.0
+
+    st.caption("Token prices, to turn the tokens used into a cost. Take them from your price "
+               "list or ask whoever manages the resource. Leave at 0 to see tokens only.")
+    _c1, _c2 = st.columns(2)
+    prezzo_in = _c1.number_input("€ per 1M input", min_value=0.0, step=0.10, format="%.2f",
+                                 value=_prezzo("LAKE_PREZZO_INPUT"))
+    prezzo_out = _c2.number_input("€ per 1M output", min_value=0.0, step=0.10, format="%.2f",
+                                  value=_prezzo("LAKE_PREZZO_OUTPUT"),
+                                  help="Thinking tokens are billed as output.")
+
     force_rerun = st.checkbox(
         "Analyse again from scratch", value=False,
         help="Off: batches whose files, settings and contract have not changed are read back "
@@ -1936,7 +2303,7 @@ if sources and any(s.get("provenienza") in ("decompilato", "esame") for s in sou
 
 if sources:
     caratteri = sum(len(s["content"]) for s in sources)
-    lotti = len(split_into_batches(sources))
+    lotti = dimensione_lotto(caratteri, parallelismo)[1]
     stato.append(ui.marca(f"{len(sources)} file{'s' if len(sources) != 1 else ''}"
                           f" · {caratteri:,} characters", "▤"))
     if lotti > 1:
@@ -1954,6 +2321,30 @@ ui.testata("LAKE: Legacy Application Knowledge Extractor",
            "Read a legacy codebase and hand a domain expert something they can check, "
            "correct and sign.", stato, sigla=True)
 
+if sources:
+    try:
+        _st = stima_consumo(sources, provider, model_name, preferenza, ragionamento,
+                            profondita, usa_cache=not force_rerun, parallelismo=parallelismo)
+        if _st["da_pagare"] == 0:
+            st.caption(f"Estimate for this run: all {_st['lotti']} batch"
+                       f"{'es are' if _st['lotti'] != 1 else ' is'} already in the cache — "
+                       "no tokens to pay.")
+        else:
+            _testo = (f"Estimate for this run: ~{_st['input']:,} tokens in, "
+                      f"{_st['output_min']:,}–{_st['output_max']:,} out")
+            if prezzo_in or prezzo_out:
+                _testo += (" · ≈ " + euro(costo(_st["input"], _st["output_min"], prezzo_in, prezzo_out))
+                           + "–" + euro(costo(_st["input"], _st["output_max"], prezzo_in, prezzo_out)))
+            else:
+                _testo += " · set token prices under Expert settings to see a cost"
+            if _st["da_pagare"] < _st["lotti"]:
+                _testo += (f" · {_st['lotti'] - _st['da_pagare']} of {_st['lotti']} batches "
+                           "come from the cache and cost nothing")
+            st.caption(_testo + ". A rough figure: the output depends on how much the model "
+                       "writes and thinks.")
+    except Exception:
+        pass   # una stima che non riesce non deve impedire di analizzare
+
 if run_analysis:
     if not sources:
         st.error("Add at least one file, or paste a snippet, before running the analysis.")
@@ -1967,14 +2358,33 @@ if run_analysis:
             st.info("Same files and same settings as the last run — showing that result. "
                     "Tick «Analyse again from scratch» to pay for a new one.")
         else:
-            # Niente barra di avanzamento: non c'è niente da misurare. Il
-            # tempo lo fa il modello mentre scrive, e quanto manchi non lo sa
-            # nessuno — una barra che si riempie subito e poi sta ferma dice
-            # una cosa falsa. Restano la rotella che gira, i secondi che
-            # passano e il diario dei lotti finiti, che sono veri.
+            # La barra conta PASSI, non tempo: leggere il codice, contattare
+            # il modello, un passo per ogni lotto, fondere con i fatti del
+            # parser, collegare i lotti. Quanto manchi dentro un passo non lo
+            # sa nessuno — il modello non dice a che punto è mentre scrive —
+            # quindi l'etichetta dice sempre QUALE passo è in corso, e i passi
+            # lunghi (i lotti) lo dicono esplicitamente. La barra di prima si
+            # riempiva subito e poi stava ferma: diceva una cosa falsa.
+            st.caption("To stop: the Stop button at the top right. Batches already finished "
+                       "are kept; the ones still queued are not started.")
             lavoro = ui.lavoro_in_corso("Reading the code…")
             with lavoro:
+                barra = st.progress(0.0, text="Reading the code")
+                # Il tabellone dei lotti: si ridisegna ogni secondo, dal filo
+                # principale, con la fotografia che i fili dei lotti scrivono.
+                quadro = st.empty()
                 diario = st.empty()
+            passi = {"fatti": 0, "totale": 0, "lotti_fatti": 0, "n": 0, "quota": 0.0}
+
+            def segna(testo):
+                # Ogni passo vale la stessa fetta: la percentuale è passi
+                # fatti su passi totali, e dice QUALE passo è in corso.
+                totale = max(passi["totale"], 1)
+                corrente = min(passi["fatti"] + 1, totale)
+                quota = min(passi["fatti"] / totale, 1.0)
+                passi["quota"] = quota
+                barra.progress(quota, text=f"{round(quota * 100)}% · Step {corrente} of {totale} · {testo}")
+
             try:
                 metadata = extract_technical_metadata(sources)
                 inizio = time.time()
@@ -1986,19 +2396,59 @@ if run_analysis:
                     # quel punto la gente ricarica, e il lavoro fatto fin lì se
                     # ne va. Con i lotti in parallelo si conta ciò che è FINITO.
                     trascorsi = int(time.time() - inizio)
-                    ui.passo(lavoro, f"Asking the model — {fatti} of {n} batches done · {trascorsi}s")
+                    ui.passo(lavoro, f"{round(passi.get('quota', 0) * 100)}% · Asking the model — "
+                                     f"{fatti} of {n} batches done · {trascorsi}s")
                     righe_diario.append(f"[{trascorsi:>4}s] {'from cache' if riusato else 'done'} "
                                         f"{fatti}/{n}: {', '.join(nomi)[:60]}")
                     diario.code("\n".join(righe_diario[-8:]), language="text")
+
+                def fase(nome, **d):
+                    if nome == "lotti":
+                        passi["n"] = d["n"]
+                        # lettura + contatto + un passo per lotto + fusione
+                        # (+ collegamento, se i lotti sono più d'uno)
+                        passi["totale"] = 3 + d["n"] + (1 if d["n"] > 1 else 0)
+                        passi["fatti"] = 1                      # la lettura è fatta
+                        segna("Contacting the model")
+                    elif nome == "contatto":
+                        passi["fatti"] += 1
+                        segna(f"Asking the model — batch 1 of {passi['n']}. "
+                              "This is the long part: minutes, not seconds.")
+                    elif nome == "lotto":
+                        passi["fatti"] += 1
+                        passi["lotti_fatti"] = d["fatti"]
+                        if d["fatti"] < passi["n"]:
+                            segna(f"Asking the model — {d['fatti']} of {passi['n']} batches done")
+                    elif nome == "tabelle":
+                        segna("Merging with the parser's facts")
+                    elif nome == "collegamento":
+                        passi["fatti"] += 1
+                        segna("Linking the batches")
+
+                def salva_parziale(parziale, stati_x):
+                    # Stop premuto: i lotti finiti restano, gli altri sono
+                    # marcati «stopped» e si riprendono dal pannello.
+                    st.session_state.update({
+                        "analysis_result": parziale, "analysis_metadata": metadata,
+                        "analysis_sources": sources, "analysis_provider": provider,
+                        "analysis_model": parziale.get("_modello", model_name),
+                        "analysis_signature": firma, "lotti_stato": stati_x})
+                    st.session_state.pop("pdf_bytes", None)
+                    st.session_state.pop("docx_bytes", None)
 
                 result, stati_lotti = analyze_legacy_application(
                     sources, metadata, provider, api_key, model_name,
                     azure_endpoint, preferenza, progress=avanza,
                     ragionamento=ragionamento, profondita=profondita,
-                    parallelismo=parallelismo, usa_cache=not force_rerun)
+                    parallelismo=parallelismo, usa_cache=not force_rerun, fase=fase,
+                    osserva=lambda foto: quadro.markdown(
+                        ui.tabellone_lotti(foto, parallelismo), unsafe_allow_html=True),
+                    salva_parziale=salva_parziale)
+                barra.progress(1.0, text=f"100% · Done · {riga_consumo(result.get('_uso') or {}, prezzo_in, prezzo_out)}")
                 st.session_state["lotti_stato"] = stati_lotti
                 ui.finito(lavoro, f"Analysed in {result.get('_durata_s', '?')}s "
-                                  f"with {result.get('_modello', 'the model')}")
+                                  f"with {result.get('_modello', 'the model')} · "
+                                  + riga_consumo(result.get("_uso") or {}, prezzo_in, prezzo_out))
                 st.session_state.update({
                     "analysis_result": result, "analysis_metadata": metadata,
                     "analysis_sources": sources, "analysis_provider": provider,
@@ -2048,7 +2498,8 @@ if result.get("_incompleti"):
         return componi_risultato(stati_x, metadata, catena_x, provider, lotti_nomi,
                                  result.get("_profondita", "full"), ragionamento,
                                  result.get("_riusati", 0), [],
-                                 time.time() - result.get("_durata_s", 0))
+                                 time.time() - result.get("_durata_s", 0),
+                                 uso_precedente=result.get("_uso"))
 
     def _salva(res, stati_x):
         st.session_state["analysis_result"] = res
@@ -2057,19 +2508,64 @@ if result.get("_incompleti"):
         st.session_state.pop("docx_bytes", None)
         st.session_state.pop("continua_fallita", None)
 
+    rotti = [s_ for s_ in stati_lotti if s_.get("fallito")]
+    a_meta = [s_ for s_ in stati_lotti if not s_.get("completo") and not s_.get("fallito")]
+
     with ui.riquadro():
-        if causa_fermo:
+        if rotti:
+            # Lotti che non hanno prodotto NIENTE: un guasto del modello, o lo
+            # Stop premuto. I lotti riusciti sono nelle tabelle; questi no, e
+            # si riprovano da soli, senza rifare gli altri.
+            fermati = [s_ for s_ in rotti if s_["fallito"] == "fermato"]
+            guasti = [s_ for s_ in rotti if s_["fallito"] != "fermato"]
+            if fermati:
+                st.warning(f"You stopped the run: {len(fermati)} batch"
+                           f"{'es' if len(fermati) != 1 else ''} never started "
+                           f"({', '.join(', '.join(s_['file'])[:40] for s_ in fermati)}). "
+                           "The batches that had finished are in the tables below.")
+            for s_ in guasti:
+                st.error(f"Batch {s_['lotto'][0]} of {s_['lotto'][1]} failed "
+                         f"({', '.join(s_['file'])[:60]}): {s_.get('messaggio') or s_['fallito']}. "
+                         "The other batches are in the tables below.")
+            if stati_lotti and st.button(
+                    "Resume the stopped batches" if fermati and not guasti else "Retry the failed batches",
+                    type="primary", key="riprova_rotti", **ui.LARGA,
+                    help="Runs only these batches again, with the current settings. Nothing "
+                         "already in the tables is paid for twice."):
+                catena_r = build_chain(provider, api_key, azure_endpoint, model_name, preferenza,
+                                       [], ragionamento)
+                try:
+                    with st.spinner("Asking the model for the batches that are missing…"):
+                        catena_r.chiedi("ping", solo_prova=True)
+                        for i, stato in enumerate(stati_lotti):
+                            if not stato.get("fallito"):
+                                continue
+                            try:
+                                nuovo_stato = analyze_batch(
+                                    catena_r, provider, stato["sorgenti"], metadata, stato["lotto"],
+                                    stato["profondita"], ragionamento, stato.get("chiave", ""))
+                            except NessunModello as e:
+                                stato["messaggio"] = catena_r.messaggio_nessuno(e)
+                                continue
+                            stati_lotti[i] = nuovo_stato
+                            if nuovo_stato["completo"] and not force_rerun and stato.get("chiave"):
+                                scrivi_cache(stato["chiave"], nuovo_stato["risultato"])
+                    _salva(_ricomponi(catena_r, stati_lotti), stati_lotti)
+                    st.rerun()
+                except NessunModello as e:
+                    st.error(catena_r.messaggio_nessuno(e))
+        if a_meta and causa_fermo:
             st.error(f"The answer is not complete ({quali}) and the model that was writing it "
                      f"has stopped answering: {causa_fermo}. Three ways out, your choice — "
                      "the app will not switch model on its own half-way through an answer.")
-        else:
+        elif a_meta:
             st.warning(f"The answer is not complete: {quali}. The model stopped before the end "
                        "and the rows below may change. Continue with the same model, from the "
                        "point where it stopped — nothing already written is thrown away.")
         if not stati_lotti:
             st.caption("This analysis was loaded from a file: continuing is not possible, "
                        "only a new run is.")
-        else:
+        elif a_meta:
             catena_c = build_chain(provider, api_key, azure_endpoint, model_name, preferenza,
                                    [], ragionamento)
             modello_fermo = fermi[0]["modello"] if fermi else next(
@@ -2151,6 +2647,39 @@ if result.get("_incompleti"):
 
 q = quality_indicators(result, metadata)
 
+# I fatti dell'esecuzione, in cima: chi ha risposto e come, quanto è costato.
+_uso = result.get("_uso") or {}
+_costo = ""
+if _uso and (prezzo_in or prezzo_out):
+    _costo = "≈ " + euro(costo(_uso.get("input", 0), _uso.get("output", 0), prezzo_in, prezzo_out))
+_token = (f"{_uso.get('input', 0):,} in · {_uso.get('output', 0):,} out"
+          + (f" ({_uso.get('ragionamento'):,} thinking)" if _uso.get("ragionamento") else "")
+          if _uso else "")
+_lotti_txt = str(result.get("_lotti", 1)) + (
+    f" ({result.get('_riusati')} from cache)" if result.get("_riusati") else "")
+if result.get("_lotti", 1) > 1 and result.get("_parallelismo"):
+    _lotti_txt += f" · up to {result['_parallelismo']} at once"
+elif result.get("_lotti", 1) == 1:
+    _lotti_txt += " · nothing to run in parallel"
+ui.fascia([
+    ("Answered by", st.session_state.get("analysis_model", "")),
+    ("Thinking", result.get("_ragionamento", "")),
+    ("Depth", result.get("_profondita", "full")),
+    ("Batches", _lotti_txt),
+    ("Took", f"{result.get('_durata_s', '?')}s"),
+    ("Tokens", _token),
+    ("Cost", _costo or ("set prices in Expert settings" if _uso else "")),
+    ("Contract", f"v{result.get('contract_version', '?')}"),
+], avviso="INCOMPLETE" if result.get("_incompleti") else "")
+if len(result.get("_esecuzione_lotti") or []) > 1:
+    with st.expander("How the batches ran"):
+        st.markdown(ui.tabellone_lotti(result["_esecuzione_lotti"],
+                                       result.get("_parallelismo", 0)),
+                    unsafe_allow_html=True)
+        st.caption("Each bar spans the time a batch was working, on the same clock: bars "
+                   "that overlap ran in parallel. Tokens are the ones counted by the provider "
+                   "for that batch, continuations included.")
+
 ui.cifre([
     # `.get`: un'analisi ricaricata da un JSON vecchio non porta i metadati.
     {"valore": f"{metadata.get('file_count', '—')}", "voce": "Files read",
@@ -2162,8 +2691,18 @@ ui.cifre([
     {"valore": f"{q['critici'] + q['alti']}", "voce": "Serious risks",
      "nota": f"{q['critici']} critical · {q['alti']} high"},
     {"valore": f"{q['confermate_pct']}%", "voce": "Rows checked",
-     "nota": f"{q['confermate']} of {q['righe']}"},
+     "nota": f"{q['confermate']} of {q['righe']}",
+     "quota": (q["confermate"] / q["righe"]) if q["righe"] else 0.0},
 ])
+
+# La legenda delle tabelle, una volta sola e in una riga: vale per tutte le
+# schede, non solo per quella in cui stava.
+ui.legenda([ui.marca("Parser", "■"), ui.marca("Model", "□"),
+            ui.marca("HIGH", "●●●"), ui.marca("MEDIUM", "●●○"), ui.marca("LOW", "●○○"),
+            ui.marca_gravita("CRITICAL"), ui.marca_gravita("HIGH"),
+            ui.marca_gravita("MEDIUM"), ui.marca_gravita("LOW")],
+           "Filled square: a fact the parser read in the source. Hollow: the model's reading, "
+           "with its confidence. Nothing is conveyed by colour alone.")
 
 tabs = st.tabs(["Summary", "Business", "Architecture", "Data", "Risks", "Diagrams",
                 "For the expert", "Parser evidence", "Export"])
@@ -2176,15 +2715,6 @@ with tabs[0]:
     if (result.get("technical_notes") or "").strip():
         st.markdown("#### Notes for a migration team")
         st.write(result["technical_notes"])
-
-    st.markdown("#### How to read the tables")
-    ui.fila([ui.marca("Parser", "■"), ui.marca("Model", "□"),
-             ui.marca("HIGH", "●●●"), ui.marca("MEDIUM", "●●○"), ui.marca("LOW", "●○○"),
-             ui.marca_gravita("CRITICAL"), ui.marca_gravita("HIGH"),
-             ui.marca_gravita("MEDIUM"), ui.marca_gravita("LOW")])
-    st.caption("A filled square is a fact the parser found in the source and cannot be wrong "
-               "about. A hollow square is the model's reading of it, and carries a confidence. "
-               "Nothing here is conveyed by colour alone.")
 
     with st.expander("How well grounded is this analysis?"):
         st.caption("These numbers say how solid the rows are — not how much of the "
@@ -2229,14 +2759,6 @@ with tabs[0]:
                        "open so you know how much to trust what you are reading.")
             st.code("\n".join(avvisi[:200]), language="text")
 
-    st.caption(("INCOMPLETE · " if result.get("_incompleti") else "")
-               + f"Answered by {st.session_state.get('analysis_model', '?')} · "
-               f"thinking: {result.get('_ragionamento', '?')} · "
-               f"depth: {result.get('_profondita', 'full')} · "
-               f"batches: {result.get('_lotti', 1)}"
-               + (f" ({result.get('_riusati')} from cache)" if result.get('_riusati') else "") + " · "
-               f"took {result.get('_durata_s', '?')}s · "
-               f"contract v{result.get('contract_version', '?')}")
 
 with tabs[1]:
     result["business_processes"] = render_tabella("business_processes", result, "bp_edit")
@@ -2348,42 +2870,46 @@ with tabs[8]:
     metadata_payload = json.dumps(metadata, ensure_ascii=False, sort_keys=True, default=str)
     col_pdf, col_docx, col_json = st.columns(3)
 
+    # I tre riquadri hanno la stessa struttura — titolo, descrizione di due
+    # righe, due bottoni — così vengono della stessa altezza anche senza
+    # l'aiuto del CSS. Il bottone di download c'è sempre, spento finché il
+    # documento non è pronto: non fa saltare il riquadro quando compare, e
+    # mostra il percorso da fare («prima costruisci, poi scarichi»).
     with col_pdf:
         with ui.riquadro():
-            st.markdown("**PDF report**")
-            st.caption("Landscape, with the diagrams drawn in. For sharing and signing.")
+            ui.testa_riquadro("PDF report",
+                              "Landscape, with the diagrams drawn in. For sharing and signing.")
             if st.button("Build PDF", key="fai_pdf", **ui.LARGA):
                 with st.spinner("Drawing diagrams and laying out the PDF…"):
                     st.session_state["pdf_bytes"] = build_pdf(
                         payload, metadata_payload,
                         st.session_state.get("analysis_provider", "AI Provider"),
                         st.session_state.get("analysis_model", "Default Model"))
-            if st.session_state.get("pdf_bytes"):
-                st.download_button("Download PDF", data=st.session_state["pdf_bytes"],
-                                   file_name="Legacy_Application_Documentation.pdf",
-                                   mime="application/pdf", **ui.LARGA)
+            st.download_button("Download PDF", data=st.session_state.get("pdf_bytes") or b"",
+                               file_name="Legacy_Application_Documentation.pdf",
+                               mime="application/pdf", key="scarica_pdf",
+                               disabled=not st.session_state.get("pdf_bytes"), **ui.LARGA)
 
     with col_docx:
         with ui.riquadro():
-            st.markdown("**Word document**")
-            st.caption("The same content, editable. For teams that keep working on it.")
+            ui.testa_riquadro("Word document",
+                              "The same content, editable. For teams that keep working on it.")
             if st.button("Build Word", key="fai_docx", **ui.LARGA):
                 with st.spinner("Laying out the Word document…"):
                     st.session_state["docx_bytes"] = build_docx(
                         payload, metadata_payload,
                         st.session_state.get("analysis_provider", "AI Provider"),
                         st.session_state.get("analysis_model", "Default Model"))
-            if st.session_state.get("docx_bytes"):
-                st.download_button(
-                    "Download Word", data=st.session_state["docx_bytes"],
-                    file_name="Legacy_Application_Documentation.docx",
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    **ui.LARGA)
+            st.download_button(
+                "Download Word", data=st.session_state.get("docx_bytes") or b"",
+                file_name="Legacy_Application_Documentation.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                key="scarica_docx", disabled=not st.session_state.get("docx_bytes"), **ui.LARGA)
 
     with col_json:
         with ui.riquadro():
-            st.markdown("**Raw data**")
-            st.caption("Every row and every field, for whatever comes next.")
+            ui.testa_riquadro("Raw data",
+                              "Every row and every field, for whatever comes next.")
             # Dentro ci vanno anche i metadati del parser e chi ha risposto:
             # è quello che serve per RIPRENDERE il lavoro da questo file, non
             # solo per leggerlo. Le chiavi di servizio cominciano con `_`.
@@ -2398,3 +2924,7 @@ with tabs[8]:
                 mime="application/json", **ui.LARGA,
                 help="Everything, including your ticks. Load it again under step 2 to pick up "
                      "where you left off — the browser session alone does not remember it.")
+            # Al posto del secondo bottone, l'unica cosa che serve sapere di
+            # questo file: stessa altezza degli altri due riquadri.
+            st.markdown('<p class="pari-testo">Drop it back under step 2 to resume the '
+                        'validation, ticks included.</p>', unsafe_allow_html=True)

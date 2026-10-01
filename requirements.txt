@@ -1,0 +1,12 @@
+# Streamlit è fissato alla serie 1.64: le regole CSS dei riquadri e del tema
+# usano i nomi dei contenitori di questa versione, e un aggiornamento
+# automatico su Streamlit Cloud potrebbe cambiarli di notte. Per salire di
+# serie: alzare qui, e rileggere i nomi (vedi MODIFICHE, blocco AL6).
+streamlit~=1.64.0
+streamlit-mermaid
+sqlglot
+pandas
+requests
+reportlab
+python-docx
+pefile
